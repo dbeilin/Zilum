@@ -63,7 +63,12 @@ impl Background {
                 };
                 let mut image = shadowed(image, placement);
                 let behind = wallpaper::behind(frame, placement.left as i32, screen);
-                for (pixel, behind) in image.pixels.chunks_exact_mut(4).zip(behind.chunks_exact(4))
+                for (pixel, behind) in image
+                    .pixels
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(behind.as_chunks::<4>().0)
                 {
                     // The window and its shadow over the opaque wallpaper.
                     let mut out = [behind[0], behind[1], behind[2], 255];
@@ -94,7 +99,7 @@ fn shadowed(image: Image, placement: Placement) -> Image {
         if to >= shadow.len() {
             break;
         }
-        for (x, pixel) in row.chunks_exact(4).enumerate() {
+        for (x, pixel) in row.as_chunks::<4>().0.iter().enumerate() {
             shadow[to + x] = pixel[3] as f32 / 255.0;
         }
     }
@@ -114,10 +119,11 @@ fn shadowed(image: Image, placement: Placement) -> Image {
         .collect();
     for (y, row) in image.pixels.chunks_exact(window_width * 4).enumerate() {
         let start = ((top + y) * width + left) * 4;
-        for (window, out) in row
-            .chunks_exact(4)
-            .zip(pixels[start..start + window_width * 4].chunks_exact_mut(4))
-        {
+        for (window, out) in row.as_chunks::<4>().0.iter().zip(
+            pixels[start..start + window_width * 4]
+                .as_chunks_mut::<4>()
+                .0,
+        ) {
             // The window over black: its colour as it is, the shadow showing through what
             // is left of its alpha.
             let (alpha, behind) = (window[3] as u32, out[3] as u32);

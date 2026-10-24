@@ -127,7 +127,7 @@ fn bitmap(image: &Image) -> Result<SoftwareBitmap> {
 /// corners and see-through regions would otherwise read as black, and dark text on them as
 /// nothing.
 fn on_white(pixels: &mut [u8]) {
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         let clear = 255 - pixel[3];
         for channel in &mut pixel[..3] {
             *channel = channel.saturating_add(clear);

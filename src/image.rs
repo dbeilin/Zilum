@@ -96,7 +96,7 @@ impl Image {
         dib.extend_from_slice(header);
         // On white, apps that ignore alpha, such as Paint, show white corners rather than black,
         // and apps that honour it do not paste holes.
-        dib.extend(self.pixels.chunks_exact(4).flat_map(|pixel| {
+        dib.extend(self.pixels.as_chunks::<4>().0.iter().flat_map(|pixel| {
             let behind = 255 - pixel[3];
             let on_white = |channel: u8| channel.saturating_add(behind);
             [
@@ -120,7 +120,7 @@ impl Image {
     }
 
     fn encode_png(&self) -> Result<Vec<u8>, png::EncodingError> {
-        let pixels = self.pixels.chunks_exact(4);
+        let pixels = self.pixels.as_chunks::<4>().0.iter();
         let (color, data): (_, Vec<u8>) = if self.is_opaque() {
             (
                 png::ColorType::Rgb,
@@ -202,12 +202,20 @@ impl Image {
     }
 
     fn is_opaque(&self) -> bool {
-        self.pixels.chunks_exact(4).all(|pixel| pixel[3] == 255)
+        self.pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 255)
     }
 
     /// Whether every pixel is fully transparent, as a window that draws nothing captures.
     pub fn is_blank(&self) -> bool {
-        self.pixels.chunks_exact(4).all(|pixel| pixel[3] == 0)
+        self.pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == 0)
     }
 }
 
@@ -326,9 +334,11 @@ mod tests {
             .chunks_exact(width as usize * 4)
             .take(height as usize)
             .map(|row| {
-                row.chunks_exact(4)
-                    .map(|bytes| {
-                        let pixel = u32::from_le_bytes(bytes.try_into().unwrap());
+                row.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&bytes| {
+                        let pixel = u32::from_le_bytes(bytes);
                         [
                             channel(pixel, header.bV5RedMask),
                             channel(pixel, header.bV5GreenMask),
@@ -354,11 +364,15 @@ mod tests {
         let frame = reader.next_frame(&mut buffer).unwrap();
         let pixels = match frame.color_type {
             png::ColorType::Rgb => buffer[..frame.buffer_size()]
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .map(|p| [p[0], p[1], p[2], 255])
                 .collect(),
             png::ColorType::Rgba => buffer[..frame.buffer_size()]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|p| [p[0], p[1], p[2], p[3]])
                 .collect(),
             other => panic!("unexpected PNG colour type {other:?}"),
@@ -465,7 +479,13 @@ mod tests {
 
         image.clear_corner_shadow();
 
-        let alphas: Vec<u8> = image.pixels.chunks_exact(4).map(|pixel| pixel[3]).collect();
+        let alphas: Vec<u8> = image
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|pixel| pixel[3])
+            .collect();
         assert_eq!(alphas, [vec![0; 32], vec![100; 6], vec![0; 32]].concat());
     }
 

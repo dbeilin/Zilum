@@ -158,8 +158,10 @@ fn shown(screen: HMONITOR, bounds: RECT, patch: RECT) -> Result<Vec<u8>> {
     for (y, row) in read.chunks_exact(width).enumerate() {
         let to = ((part.top - patch.top) as usize + y) * across + (part.left - patch.left) as usize;
         for (out, pixel) in pixels[to * 4..to * 4 + width]
-            .chunks_exact_mut(4)
-            .zip(row.chunks_exact(4))
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(row.as_chunks::<4>().0)
         {
             over(out, pixel);
         }

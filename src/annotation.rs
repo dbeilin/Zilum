@@ -931,7 +931,10 @@ pub fn blur_blocks(
             let mut sum = [0u32; 4];
             for y in rows.clone() {
                 let at = ((top + y) * width + left) * 4;
-                for pixel in pixels[at + columns.start * 4..at + columns.end * 4].chunks_exact(4) {
+                for pixel in pixels[at + columns.start * 4..at + columns.end * 4]
+                    .as_chunks::<4>()
+                    .0
+                {
                     for (total, &channel) in sum.iter_mut().zip(pixel) {
                         *total += channel as u32;
                     }
@@ -941,7 +944,7 @@ pub fn blur_blocks(
             let average = sum.map(|total| ((total + count / 2) / count) as u8);
             for y in rows.clone() {
                 let at = (y * across + columns.start) * 4;
-                for pixel in blocks[at..at + columns.len() * 4].chunks_exact_mut(4) {
+                for pixel in blocks[at..at + columns.len() * 4].as_chunks_mut::<4>().0 {
                     pixel.copy_from_slice(&average);
                 }
             }
