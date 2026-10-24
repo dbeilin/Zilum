@@ -163,6 +163,8 @@ struct State {
     messages: [String; 5],
     /// The control the keyboard is on, if any.
     focus: Option<Stop>,
+    /// Whether that control shows the focus ring: once Tab has moved the keyboard, until a click.
+    ring: bool,
     /// What the pointer is on, and what the left button went down on while it is held.
     hover: Option<Target>,
     pressed: Option<Target>,
@@ -234,6 +236,7 @@ pub fn handles(msg: &MSG) -> bool {
             VK_TAB => {
                 let back = win32::key_down(VK_SHIFT);
                 with(|state| {
+                    state.ring = true;
                     state.move_focus(Some(settings_layout::next(state.focus, back)), true)
                 });
                 true
@@ -485,6 +488,7 @@ impl State {
             layout,
             messages: Default::default(),
             focus: None,
+            ring: false,
             hover: None,
             pressed: None,
             field_font: HFONT::default(),
@@ -796,7 +800,7 @@ impl State {
         let state = text.label(if on { "On" } else { "Off" })?;
         self.beside(&state, &layout.toggle_state, Tone::Text)?;
 
-        let focused = match self.focus {
+        let focused = match self.focus.filter(|_| self.ring) {
             Some(Stop::Hotkey(mode)) => Some((layout.hotkeys[mode as usize], radius)),
             Some(Stop::Folder) => Some((layout.folder, radius)),
             Some(Stop::Browse) => Some((layout.browse, radius)),
@@ -877,6 +881,7 @@ impl State {
         if native(self.hwnd, folder) == unsafe { GetFocus() } && self.focus != folder {
             let from = self.focus;
             self.focus = folder;
+            self.ring = false;
             set_listening(None);
             self.leave(from);
             let _ = self.present();
@@ -1247,6 +1252,7 @@ unsafe extern "system" fn window_proc(
                     Some(Target::StartWithWindows) => (Some(Stop::StartWithWindows), false),
                     None => (None, false),
                 };
+                state.ring = false;
                 state.move_focus(stop, listen);
             });
             win32::capture(hwnd);
