@@ -41,12 +41,20 @@ jobs:
         env:
           BUMP: ${{ inputs.bump }}
         run: |
-          current=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          current=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if ! [[ "$current" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cargo.toml's package version '$current' is not X.Y.Z"
+            exit 1
+          fi
           IFS=. read -r major minor patch <<< "$current"
           case "$BUMP" in
             major) next="$((major + 1)).0.0" ;;
             minor) next="$major.$((minor + 1)).0" ;;
             patch) next="$major.$minor.$((patch + 1))" ;;
+            *)
+              echo "::error::Unknown bump '$BUMP'"
+              exit 1
+              ;;
           esac
           if git rev-parse -q --verify "refs/tags/v$next" > /dev/null; then
             echo "::error::v$next is already tagged"

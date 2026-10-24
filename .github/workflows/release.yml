@@ -43,7 +43,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          version=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Cargo.toml's package version '$version' is not X.Y.Z"
+            exit 1
+          fi
           if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             echo "v$version is released already"
             new=false
@@ -103,12 +107,38 @@ jobs:
         with:
           subject-path: dist/Zilum.exe
 
+      # The tag is made here, at the built commit. A v$VERSION tag that
+      # already exists on another commit stops the release instead of being
+      # reused; one on this commit is a re-run and is kept.
+      - name: Tag the commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          if tagged=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION" --jq .object.sha 2> /dev/null); then
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::v$VERSION already tags $tagged, not $GITHUB_SHA"
+              exit 1
+            fi
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/v$VERSION" -f "sha=$GITHUB_SHA" > /dev/null
+          fi
+
+      # The notes are the description of the release PR merged as this
+      # commit, matched by its merge commit and branch, never just the
+      # first PR GitHub lists. Without one, GitHub writes the notes.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.check.outputs.version }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].body // ""' > "$RUNNER_TEMP/notes.md"
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '
+            .[]
+            | select(.merged_at != null
+                and .merge_commit_sha == $ENV.GITHUB_SHA
+                and .head.ref == "release/v" + $ENV.VERSION
+                and .head.repo.full_name == $ENV.GITHUB_REPOSITORY)
+            | .body // ""' > "$RUNNER_TEMP/notes.md"
           if grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
             notes=(--notes-file "$RUNNER_TEMP/notes.md")
           else
@@ -116,7 +146,7 @@ jobs:
           fi
           gh release create "v$VERSION" dist/Zilum.exe \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --verify-tag \
             --title "Zilum $VERSION" \
             --latest \
             "${notes[@]}"
