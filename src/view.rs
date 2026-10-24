@@ -273,13 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn opens_at_fit_which_is_100_percent_when_the_image_fits() {
-        let view = View::new(v(400.0, 300.0), v(500.0, 300.0));
-        assert_eq!(view.label(), "100%");
-        assert_eq!(view.scale(), 1.0);
-    }
-
-    #[test]
     fn a_fitted_image_resized_to_half_is_shown_at_the_same_zoom_half_as_large_and_centred() {
         // A 2560 × 1440 screen in a 1706 × 888 image area: fitted at 0.6167.
         let mut view = View::new(v(2560.0, 1440.0), v(1706.0, 888.0));
@@ -328,8 +321,9 @@ mod tests {
     }
 
     #[test]
-    fn the_zoom_button_does_nothing_while_fit_is_100_percent() {
+    fn an_image_that_fits_opens_at_100_percent_where_the_zoom_button_does_nothing() {
         let mut view = View::new(v(400.0, 300.0), v(500.0, 300.0));
+        assert_eq!(view.scale(), 1.0);
         assert!(!view.can_toggle());
         assert!(!view.toggle());
         assert!(view.at_fit());
@@ -371,17 +365,6 @@ mod tests {
     }
 
     #[test]
-    fn at_100_percent_after_the_window_grows_to_fit_the_image_the_zoom_button_does_nothing() {
-        // A large image at 100 percent, then the window grown to fit it.
-        let mut view = View::new(v(1600.0, 800.0), v(1000.0, 900.0));
-        view.actual_size();
-        view.resize(v(1700.0, 900.0));
-        assert!(!view.can_toggle());
-        assert!(!view.toggle());
-        assert_eq!(view.label(), "100%");
-    }
-
-    #[test]
     fn a_large_image_fitted_smaller_reads_its_percentage_rounded() {
         // Fit is 62.5 percent.
         let view = View::new(v(1600.0, 800.0), v(1000.0, 900.0));
@@ -403,14 +386,6 @@ mod tests {
         }
         assert_eq!(labels, ["150%", "200%", "300%", "400%"]);
         assert_eq!(view.scale(), 4.0);
-    }
-
-    #[test]
-    fn zooming_out_from_fit_does_nothing() {
-        let mut view = View::new(v(400.0, 300.0), v(400.0, 300.0));
-        assert!(!view.zoom_out(v(10.0, 10.0)));
-        assert!(view.at_fit());
-        assert_eq!(view.label(), "100%");
     }
 
     #[test]

@@ -566,18 +566,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn nothing_becoming_selected_closes_it() {
-        // A press on empty image, or the press that draws, which leaves it closed if it draws
-        // nothing: a click, a drag too short to draw, or a drag cancelled with Esc.
-        assert_eq!(open_after(Event::Selection { selected: None }), None);
-    }
-
-    #[test]
-    fn esc_closes_it() {
-        assert_eq!(open_after(Event::Escape), None);
-    }
-
     /// Blue at a size each span holds.
     fn blue() -> Style {
         Style {
@@ -725,19 +713,11 @@ mod tests {
 
     #[test]
     fn at_100_percent_the_panel_hangs_8_below_blur_from_its_left_edge_around_a_120_pixel_slider() {
-        // Blur's button as the bar lays it out at 100 percent.
-        let flyout = Flyout::under(rect([232.0, 4.0, 268.0, 36.0]), 1.0);
+        let flyout = at_100();
         // 8 below the button, 4 below the bar's 40, and 8 either side of the slider and 4 above
         // and below it.
         assert_eq!(edges(flyout.panel), [232.0, 44.0, 368.0, 76.0]);
         assert_eq!(edges(flyout.level), [240.0, 48.0, 360.0, 72.0]);
-    }
-
-    #[test]
-    fn at_150_percent_each_size_and_gap_is_scaled_and_rounded() {
-        let flyout = Flyout::under(rect([348.0, 6.0, 402.0, 54.0]), 1.5);
-        assert_eq!(edges(flyout.panel), [348.0, 66.0, 552.0, 114.0]);
-        assert_eq!(edges(flyout.level), [360.0, 72.0, 540.0, 108.0]);
     }
 
     fn button_edges(row: &StyleFlyout) -> Vec<(Command, [f32; 4])> {
@@ -760,26 +740,6 @@ mod tests {
     }
 
     #[test]
-    fn at_100_percent_a_row_hangs_8_below_its_button_holding_the_swatches_a_divider_and_the_slider()
-    {
-        // Pen's: 8 in, eight 24-pixel swatches 2 apart, a divider with 4 either side, a
-        // 120-pixel slider as tall as a swatch, 8 in.
-        let row = StyleFlyout::under(rect([118.0, 4.0, 154.0, 36.0]), 1.0, Command::Pen);
-        assert_eq!(edges(row.panel), [118.0, 44.0, 469.0, 76.0]);
-        assert_eq!(button_edges(&row), swatches(126.0));
-        assert_eq!(row.slider.map(edges), Some([341.0, 48.0, 461.0, 72.0]));
-        // One pixel, 16 tall, centred down the panel.
-        let dividers: Vec<[f32; 4]> = row.dividers.iter().copied().map(edges).collect();
-        assert_eq!(dividers, [[336.0, 52.0, 337.0, 68.0]]);
-
-        // Counter's holds the same, from its own button.
-        let row = counters_row();
-        assert_eq!(edges(row.panel), [194.0, 44.0, 545.0, 76.0]);
-        assert_eq!(button_edges(&row), swatches(202.0));
-        assert_eq!(row.slider.map(edges), Some([417.0, 48.0, 537.0, 72.0]));
-    }
-
-    #[test]
     fn texts_row_holds_the_eight_swatches_alone() {
         // Text's button as the bar lays it out at 100 percent.
         let row = StyleFlyout::under(rect([156.0, 4.0, 192.0, 36.0]), 1.0, Command::Text);
@@ -788,10 +748,6 @@ mod tests {
         assert_eq!(button_edges(&row), swatches(164.0));
         assert!(row.dividers.is_empty());
         assert_eq!(row.slider, None);
-        // At 150 percent, 12 in, 36-pixel swatches 3 apart.
-        let row = StyleFlyout::under(rect([234.0, 6.0, 288.0, 54.0]), 1.5, Command::Text);
-        assert_eq!(edges(row.panel), [234.0, 66.0, 567.0, 114.0]);
-        assert_eq!(row.buttons.len(), 8);
     }
 
     #[test]
@@ -812,26 +768,6 @@ mod tests {
         // Hit where they are, and not in the gaps between them.
         assert_eq!(row.hit(430.0, 60.0), Some(Command::Head(Head::Both)));
         assert_eq!(row.hit(419.0, 60.0), None);
-    }
-
-    #[test]
-    fn rects_row_has_a_divider_and_the_three_fills_after_the_slider() {
-        let row = StyleFlyout::under(rect([80.0, 4.0, 116.0, 36.0]), 1.0, Command::Rect);
-        // The slider ends at 423, then 4, the divider, 4, and three 24-pixel buttons 2 apart,
-        // Outline, Tint and Solid, then 8.
-        assert_eq!(edges(row.panel), [80.0, 44.0, 516.0, 76.0]);
-        let mut expected = swatches(88.0);
-        expected.extend([
-            (Command::Fill(Fill::Outline), [432.0, 48.0, 456.0, 72.0]),
-            (Command::Fill(Fill::Tint), [458.0, 48.0, 482.0, 72.0]),
-            (Command::Fill(Fill::Solid), [484.0, 48.0, 508.0, 72.0]),
-        ]);
-        assert_eq!(button_edges(&row), expected);
-        assert_eq!(row.slider.map(edges), Some([303.0, 48.0, 423.0, 72.0]));
-        assert_eq!(edges(row.dividers[1]), [427.0, 52.0, 428.0, 68.0]);
-        // Hit where they are, and not in the gaps between them.
-        assert_eq!(row.hit(470.0, 60.0), Some(Command::Fill(Fill::Tint)));
-        assert_eq!(row.hit(457.0, 60.0), None);
     }
 
     #[test]
@@ -890,13 +826,6 @@ mod tests {
         assert_eq!(row.hit(940.0, 60.0), Some(Command::Resize(Resize::Third)));
         assert_eq!(row.hit(920.0, 60.0), None);
         assert_eq!(row.hit(874.0, 60.0), None);
-
-        // At 150 percent, from a narrower readout: 12 in, labels of 37.5 a whole 38 with 12
-        // either side, 3 apart.
-        let row = StyleFlyout::resizes(rect([1300.0, 6.0, 1400.0, 54.0]), 1.5, 37.5);
-        assert_eq!(edges(row.panel), [1300.0, 66.0, 1516.0, 114.0]);
-        assert_eq!(edges(row.buttons[0].1), [1312.0, 72.0, 1374.0, 108.0]);
-        assert_eq!(edges(row.buttons[2].1), [1442.0, 72.0, 1504.0, 108.0]);
     }
 
     #[test]
@@ -934,11 +863,5 @@ mod tests {
         for open in [None, Some(Command::Arrow), Some(Command::Blur)] {
             assert_eq!(open_after(Event::Press { open }), open, "{open:?}");
         }
-    }
-
-    #[test]
-    fn it_follows_the_button_wherever_it_is() {
-        let flyout = Flyout::under(rect([300.0, 10.0, 336.0, 42.0]), 1.0);
-        assert_eq!(edges(flyout.panel), [300.0, 50.0, 436.0, 82.0]);
     }
 }

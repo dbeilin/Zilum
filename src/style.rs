@@ -148,7 +148,7 @@ pub struct Sizes {
 }
 
 impl Sizes {
-    /// The sizes on first run, the medium of the three sizes earlier builds had.
+    /// The sizes on first run.
     pub const FIRST_RUN: Sizes = Sizes {
         arrow: Size(3.0),
         rect: Size(3.0),
@@ -162,7 +162,7 @@ impl Sizes {
 pub struct TextSize(u16);
 
 impl TextSize {
-    /// The size on first run, the medium of the three sizes earlier builds had.
+    /// The size on first run.
     pub const FIRST_RUN: TextSize = TextSize(20);
     const LEAST: u16 = 6;
     const MOST: u16 = 400;

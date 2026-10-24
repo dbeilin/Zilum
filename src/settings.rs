@@ -157,21 +157,12 @@ fn parse(text: &str, default_folder: &Path) -> (Settings, bool) {
     let mut settings = Settings::defaults(default_folder.to_owned());
     let mut invalid = false;
     // Notepad may start the file with a byte order mark.
-    let lines: Vec<(&str, &str)> = text
+    let lines = text
         .trim_start_matches('\u{feff}')
         .lines()
         .filter_map(|line| line.split_once('='))
-        .map(|(key, value)| (key.trim(), value.trim()))
-        .collect();
-    let capture_key = file_key(Mode::Capture);
-    let has_capture_key = lines.iter().any(|(key, _)| *key == capture_key);
+        .map(|(key, value)| (key.trim(), value.trim()));
     for (key, value) in lines {
-        // Older files name the Capture hotkey's key after region capture. The new name wins.
-        let key = match key {
-            "hotkey_region" if has_capture_key => continue,
-            "hotkey_region" => capture_key,
-            _ => key,
-        };
         if let Some(mode) = Mode::ALL.into_iter().find(|m| file_key(*m) == key) {
             let slot = &mut settings.hotkeys[mode as usize];
             match Hotkey::parse(value) {
@@ -191,10 +182,6 @@ fn parse(text: &str, default_folder: &Path) -> (Settings, bool) {
                     invalid = true;
                 }
             },
-            // Earlier builds' one size for every tool, thin, medium or thick, which meant
-            // something different for each: every tool keeps its own, medium unless its key says
-            // otherwise, and the line goes on the next write.
-            "size" => {}
             "arrow_size" | "rect_size" | "pen_size" | "counter_size" => {
                 let first = Sizes::FIRST_RUN;
                 let (slot, first_run, span) = match key {
@@ -240,17 +227,12 @@ fn parse(text: &str, default_folder: &Path) -> (Settings, bool) {
                     invalid = true;
                 }
             },
-            "fill" => match value {
-                // Earlier builds' Fill toggle, which the next write gives its new name.
-                "true" => settings.fill = Fill::Solid,
-                "false" => settings.fill = Fill::Outline,
-                _ => match Fill::ALL.into_iter().find(|f| fill_name(*f) == value) {
-                    Some(fill) => settings.fill = fill,
-                    None => {
-                        settings.fill = Fill::FIRST_RUN;
-                        invalid = true;
-                    }
-                },
+            "fill" => match Fill::ALL.into_iter().find(|f| fill_name(*f) == value) {
+                Some(fill) => settings.fill = fill,
+                None => {
+                    settings.fill = Fill::FIRST_RUN;
+                    invalid = true;
+                }
             },
             "blur" => match whole(value).and_then(Level::new) {
                 Some(level) => settings.blur = level,
@@ -428,16 +410,6 @@ mod tests {
         Settings::defaults(PathBuf::from(PICTURES))
     }
 
-    #[test]
-    fn the_save_folder_and_start_with_windows_are_read_beside_the_rest() {
-        let (settings, invalid) =
-            parse("save_folder=D:\\Shots\\Zilum\nstart_with_windows=true\ncolor=blue\n");
-        assert_eq!(settings.save_folder, PathBuf::from(r"D:\Shots\Zilum"));
-        assert!(settings.start_with_windows);
-        assert_eq!(settings.colour, Colour::Blue);
-        assert!(!invalid);
-    }
-
     fn sizes([arrow, rect, pen, counter]: [u32; 4]) -> Sizes {
         let stroke = |value| Size::new(value, Span::STROKES).unwrap();
         Sizes {
@@ -449,52 +421,11 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_and_each_tools_size_are_read_from_key_value_lines() {
-        let (settings, invalid) =
-            parse("color=blue\narrow_size=12\nrect_size=1\npen_size=7\ncounter_size=64\n");
-        assert_eq!(settings.colour, Colour::Blue);
-        assert_eq!(settings.sizes, sizes([12, 1, 7, 64]));
-        assert!(!invalid);
-    }
-
-    #[test]
     fn a_missing_size_is_3_for_arrows_rectangles_and_strokes_and_32_for_badges() {
         assert_eq!(defaults().sizes, sizes([3, 3, 3, 32]));
         let (settings, invalid) = parse("pen_size=10\n");
         assert_eq!(settings.sizes, sizes([3, 3, 10, 32]));
         assert!(!invalid);
-    }
-
-    #[test]
-    fn an_earlier_builds_size_is_medium_for_every_tool_and_not_flagged() {
-        for value in ["thin", "medium", "thick", "huge", ""] {
-            let (settings, invalid) = parse(&format!("size={value}\ncolor=blue\n"));
-            assert_eq!(settings.sizes, Sizes::FIRST_RUN, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(!invalid, "{value:?}");
-        }
-        // Beside the new keys, before or after them, it leaves them as they say.
-        for text in [
-            "size=thin\narrow_size=9\ncounter_size=20\n",
-            "arrow_size=9\ncounter_size=20\nsize=thick\n",
-        ] {
-            let (settings, invalid) = parse(text);
-            assert_eq!(settings.sizes, sizes([9, 3, 3, 20]), "{text:?}");
-            assert!(!invalid, "{text:?}");
-        }
-    }
-
-    #[test]
-    fn an_earlier_builds_size_is_written_back_without_it() {
-        let (settings, _) = parse("color=blue\nsize=thick\nfill=true\n");
-        let text = to_text(&settings);
-        assert!(!text.contains("\nsize="), "{text}");
-        assert!(
-            text.ends_with(
-                "color=blue\r\narrow_size=3\r\nrect_size=3\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=solid\r\nblur=8\r\n"
-            ),
-            "{text}"
-        );
     }
 
     #[test]
@@ -528,14 +459,41 @@ mod tests {
     }
 
     #[test]
-    fn start_with_windows_is_true_or_false_and_anything_else_is_flagged_and_off() {
-        assert_eq!(parse("start_with_windows=false\n"), (defaults(), false));
-        for value in ["banana", "1", "yes", ""] {
-            let (settings, invalid) = parse(&format!("start_with_windows={value}\ncolor=blue\n"));
-            assert!(!settings.start_with_windows, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
+    fn an_invalid_value_is_flagged_and_its_key_has_the_default() {
+        for line in [
+            "color=teal",
+            "start_with_windows=yes",
+            "start_with_windows=1",
+            "head=two",
+            "head=Both",
+            "fill=true",
+            "fill=Tint",
+            "text_size=5",
+            "text_size=401",
+            "text_size=+20",
+            "text_size=20.5",
+            "text_size=99999999999",
+            "blur=3",
+            "blur=41",
+            "blur=8.0",
+            "theme=Dark",
+            "theme=auto",
+            "window_background=glow",
+            "hotkey_window=Banana",
+            "hotkey_window=Win+R",
+            "hotkey_text=T",
+            "head=",
+        ] {
+            let (settings, invalid) = parse(&format!("{line}\npen_size=7\n"));
+            let expected = Settings {
+                sizes: sizes([3, 3, 7, 32]),
+                ..defaults()
+            };
+            assert_eq!(settings, expected, "{line:?}");
+            assert!(invalid, "{line:?}");
         }
+        // A later invalid line undoes an earlier valid one.
+        assert_eq!(parse("theme=dark\ntheme=auto\n"), (defaults(), true));
     }
 
     #[test]
@@ -581,14 +539,6 @@ mod tests {
     }
 
     #[test]
-    fn a_value_that_is_not_an_allowed_name_is_flagged_and_its_key_has_the_default() {
-        let (settings, invalid) = parse("color=teal\narrow_size=9\n");
-        assert_eq!(settings.colour, Colour::Red);
-        assert_eq!(settings.sizes.arrow.get(), 9.0);
-        assert!(invalid);
-    }
-
-    #[test]
     fn comments_unknown_keys_and_blank_lines_are_ignored() {
         let (settings, invalid) =
             parse("# arrow_size=huge\nhotkey=nonsense\n\nno equals sign\ncolor=green\n");
@@ -617,50 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn the_four_hotkeys_are_read_beside_the_colour_and_sizes() {
-        let (settings, invalid) = parse(
-            "hotkey_capture=Ctrl+Alt+R\nhotkey_screen=None\nhotkey_window=shift+f12\nhotkey_text=None\ncolor=blue\ncounter_size=40\n",
-        );
-        assert_eq!(
-            settings.hotkeys,
-            hotkeys(["Ctrl+Alt+R", "None", "Shift+F12", "None"])
-        );
-        assert_eq!(settings.colour, Colour::Blue);
-        assert_eq!(settings.sizes.counter.get(), 40.0);
-        assert!(!invalid);
-    }
-
-    #[test]
-    fn an_m5_files_hotkey_region_is_the_capture_hotkey_and_is_written_as_hotkey_capture() {
-        let (settings, invalid) = parse("hotkey_region=F12\ncolor=blue\n");
-        assert_eq!(
-            settings.hotkeys,
-            hotkeys(["F12", "Shift+PrintScreen", "None", "None"])
-        );
-        assert!(!invalid);
-        let text = to_text(&settings);
-        assert!(text.starts_with("hotkey_capture=F12\r\n"), "{text}");
-        assert!(!text.contains("hotkey_region"), "{text}");
-    }
-
-    #[test]
-    fn with_both_hotkey_capture_and_hotkey_region_hotkey_capture_is_read() {
-        for text in [
-            "hotkey_capture=Ctrl+Alt+R\nhotkey_region=F12\n",
-            "hotkey_region=F12\nhotkey_capture=Ctrl+Alt+R\n",
-            "hotkey_capture=Ctrl+Alt+R\nhotkey_region=Banana\n",
-        ] {
-            let (settings, invalid) = parse(text);
-            assert_eq!(
-                settings.hotkeys[0],
-                Hotkey::parse("Ctrl+Alt+R").unwrap(),
-                "{text:?}"
-            );
-            assert!(!invalid, "{text:?}");
-        }
-    }
-
-    #[test]
     fn a_missing_hotkey_has_its_default() {
         let (settings, invalid) = parse("hotkey_screen=F12\n");
         assert_eq!(
@@ -669,75 +575,6 @@ mod tests {
         );
         assert!(!invalid);
         assert_eq!(parse(""), (defaults(), false));
-    }
-
-    #[test]
-    fn the_window_hotkey_is_none_unless_the_file_sets_it() {
-        assert_eq!(
-            defaults().hotkeys,
-            hotkeys(["PrintScreen", "Shift+PrintScreen", "None", "None"])
-        );
-        let (settings, invalid) = parse("hotkey_window=Ctrl+Shift+PrintScreen\n");
-        assert_eq!(
-            settings.hotkeys,
-            hotkeys([
-                "PrintScreen",
-                "Shift+PrintScreen",
-                "Ctrl+Shift+PrintScreen",
-                "None"
-            ])
-        );
-        assert!(!invalid);
-    }
-
-    #[test]
-    fn the_copy_text_hotkey_is_none_unless_the_file_sets_it_and_is_written_after_window() {
-        assert_eq!(defaults().hotkeys[Mode::CopyText as usize], None);
-        let (settings, invalid) = parse("hotkey_text=ctrl+alt+t\n");
-        assert_eq!(
-            settings.hotkeys,
-            hotkeys(["PrintScreen", "Shift+PrintScreen", "None", "Ctrl+Alt+T"])
-        );
-        assert!(!invalid);
-        assert!(
-            to_text(&settings).starts_with(
-                "hotkey_capture=PrintScreen\r\nhotkey_screen=Shift+PrintScreen\r\nhotkey_window=None\r\nhotkey_text=Ctrl+Alt+T\r\nsave_folder="
-            ),
-            "{}",
-            to_text(&settings)
-        );
-    }
-
-    #[test]
-    fn an_invalid_copy_text_hotkey_is_flagged_and_none() {
-        for value in ["Banana", "T", "Win+T", ""] {
-            let (settings, invalid) = parse(&format!(
-                "hotkey_text=Ctrl+Alt+T\nhotkey_text={value}\ncolor=blue\n"
-            ));
-            assert_eq!(settings.hotkeys, Mode::DEFAULTS, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn a_copy_text_hotkey_repeating_a_capture_hotkey_is_flagged_and_none() {
-        let (settings, invalid) = parse("hotkey_window=F9\nhotkey_text=f9\n");
-        assert_eq!(
-            settings.hotkeys,
-            hotkeys(["PrintScreen", "Shift+PrintScreen", "F9", "None"])
-        );
-        assert!(invalid);
-    }
-
-    #[test]
-    fn an_invalid_hotkey_is_flagged_and_has_its_default() {
-        for value in ["Banana", "R", "5", "Win+R", ""] {
-            let (settings, invalid) = parse(&format!("hotkey_window={value}\ncolor=blue\n"));
-            assert_eq!(settings.hotkeys, Mode::DEFAULTS, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
-        }
     }
 
     #[test]
@@ -759,222 +596,6 @@ mod tests {
             to_text(&settings),
             "hotkey_capture=Ctrl+Alt+Shift+R\r\nhotkey_screen=Shift+PrintScreen\r\nhotkey_window=None\r\nhotkey_text=None\r\nsave_folder=C:\\Users\\me\\Pictures\\Zilum\r\nstart_with_windows=true\r\ntheme=light\r\nwindow_background=trim\r\ncolor=blue\r\narrow_size=3\r\nrect_size=11\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=8\r\n"
         );
-    }
-
-    #[test]
-    fn head_is_one_both_or_none_and_one_when_missing() {
-        assert_eq!(defaults().head, Head::One);
-        assert_eq!(parse("color=blue\n").0.head, Head::One);
-        for (value, head) in [
-            ("one", Head::One),
-            ("both", Head::Both),
-            ("none", Head::None),
-        ] {
-            let (settings, invalid) = parse(&format!("head={value}\ncolor=blue\n"));
-            assert_eq!(settings.head, head, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(!invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn any_other_head_is_flagged_and_one() {
-        for value in ["two", "Both", "1", "true", ""] {
-            let (settings, invalid) = parse(&format!("head=none\nhead={value}\ncolor=blue\n"));
-            assert_eq!(settings.head, Head::One, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn head_is_written_after_the_text_size() {
-        let (settings, _) = parse("head=both\n");
-        assert!(
-            to_text(&settings).ends_with("text_size=20\r\nhead=both\r\nfill=outline\r\nblur=8\r\n")
-        );
-    }
-
-    #[test]
-    fn fill_is_outline_tint_or_solid_and_outline_when_missing() {
-        assert_eq!(defaults().fill, Fill::Outline);
-        assert_eq!(parse("color=blue\n").0.fill, Fill::Outline);
-        for (value, fill) in [
-            ("outline", Fill::Outline),
-            ("tint", Fill::Tint),
-            ("solid", Fill::Solid),
-        ] {
-            let (settings, invalid) = parse(&format!("fill={value}\ncolor=blue\n"));
-            assert_eq!(settings.fill, fill, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(!invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn an_earlier_builds_fill_is_read_as_solid_or_outline_and_written_back_in_the_new_form() {
-        for (value, fill, written) in [
-            ("true", Fill::Solid, "\r\nfill=solid\r\n"),
-            ("false", Fill::Outline, "\r\nfill=outline\r\n"),
-        ] {
-            let (settings, invalid) = parse(&format!("fill={value}\ncolor=blue\n"));
-            assert_eq!(settings.fill, fill, "{value:?}");
-            assert!(!invalid, "{value:?}");
-            let text = to_text(&settings);
-            assert!(text.contains(written), "{text}");
-        }
-    }
-
-    #[test]
-    fn any_other_fill_is_flagged_and_outline() {
-        for value in ["maybe", "True", "Tint", "1", "on", "filled", ""] {
-            let (settings, invalid) = parse(&format!("fill=solid\nfill={value}\ncolor=blue\n"));
-            assert_eq!(settings.fill, Fill::Outline, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn fill_is_written_after_the_head() {
-        let (settings, _) = parse("fill=tint\n");
-        assert!(to_text(&settings).ends_with(
-            "color=red\r\narrow_size=3\r\nrect_size=3\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=tint\r\nblur=8\r\n"
-        ));
-        assert!(to_text(&defaults()).ends_with(
-            "counter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=8\r\n"
-        ));
-    }
-
-    #[test]
-    fn the_text_size_is_6_to_400_and_20_when_missing() {
-        assert_eq!(defaults().text_size.get(), 20);
-        assert_eq!(parse("color=blue\n").0.text_size.get(), 20);
-        for value in [6, 41, 400] {
-            let (settings, invalid) = parse(&format!("text_size={value}\ncolor=blue\n"));
-            assert_eq!(settings.text_size.get(), value, "{value}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(!invalid, "{value}");
-        }
-    }
-
-    #[test]
-    fn any_other_text_size_is_flagged_and_20() {
-        for value in [
-            "5",
-            "401",
-            "0",
-            "-20",
-            "+20",
-            "20.5",
-            "medium",
-            "99999999999",
-            "",
-        ] {
-            let (settings, invalid) =
-                parse(&format!("text_size=40\ntext_size={value}\ncolor=blue\n"));
-            assert_eq!(settings.text_size.get(), 20, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn the_blur_level_is_4_to_40_and_8_when_missing() {
-        assert_eq!(defaults().blur, Level::FIRST_RUN);
-        assert_eq!(parse("color=blue\n").0.blur.get(), 8.0);
-        for value in [4, 13, 40] {
-            let (settings, invalid) = parse(&format!("blur={value}\ncolor=blue\n"));
-            assert_eq!(settings.blur.get(), value as f32, "{value}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(!invalid, "{value}");
-        }
-    }
-
-    #[test]
-    fn any_other_blur_level_is_flagged_and_8() {
-        for value in ["99", "3", "41", "0", "-8", "+8", "8.0", "medium", ""] {
-            let (settings, invalid) = parse(&format!("blur=20\nblur={value}\ncolor=blue\n"));
-            assert_eq!(settings.blur.get(), 8.0, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn the_blur_level_is_written_after_fill() {
-        let (settings, _) = parse("blur=40\n");
-        assert!(to_text(&settings).ends_with(
-            "counter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=40\r\n"
-        ));
-        assert!(to_text(&defaults()).ends_with("fill=outline\r\nblur=8\r\n"));
-    }
-
-    #[test]
-    fn the_window_background_is_trim_shadow_or_wallpaper_and_trim_when_missing() {
-        assert_eq!(defaults().window_background, Background::TrimShadow);
-        for (value, background) in [
-            ("trim", Background::TrimShadow),
-            ("shadow", Background::Shadow),
-            ("wallpaper", Background::Wallpaper),
-        ] {
-            let (settings, invalid) = parse(&format!("window_background={value}\ncolor=blue\n"));
-            assert_eq!(settings.window_background, background, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(!invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn any_other_window_background_is_flagged_and_trim() {
-        for value in ["glow", "Shadow", "none", ""] {
-            let (settings, invalid) = parse(&format!(
-                "window_background=shadow\nwindow_background={value}\ncolor=blue\n"
-            ));
-            assert_eq!(
-                settings.window_background,
-                Background::TrimShadow,
-                "{value:?}"
-            );
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn the_window_background_is_written_after_the_theme() {
-        let (settings, _) = parse("window_background=shadow\n");
-        let text = to_text(&settings);
-        assert!(
-            text.contains("\r\ntheme=system\r\nwindow_background=shadow\r\ncolor="),
-            "{text}"
-        );
-        assert!(to_text(&defaults()).contains("\r\nwindow_background=trim\r\n"));
-    }
-
-    #[test]
-    fn the_theme_is_system_light_or_dark_and_system_when_missing() {
-        assert_eq!(defaults().theme, Theme::System);
-        for (value, theme) in [
-            ("system", Theme::System),
-            ("light", Theme::Light),
-            ("dark", Theme::Dark),
-        ] {
-            let (settings, invalid) = parse(&format!("theme={value}\ncolor=blue\n"));
-            assert_eq!(settings.theme, theme, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(!invalid, "{value:?}");
-        }
-    }
-
-    #[test]
-    fn any_other_theme_is_flagged_and_has_the_default() {
-        for value in ["teal", "Dark", "auto", ""] {
-            let (settings, invalid) = parse(&format!("theme=dark\ntheme={value}\ncolor=blue\n"));
-            assert_eq!(settings.theme, Theme::System, "{value:?}");
-            assert_eq!(settings.colour, Colour::Blue);
-            assert!(invalid, "{value:?}");
-        }
     }
 
     #[test]

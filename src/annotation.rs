@@ -2019,6 +2019,21 @@ mod tests {
         (text.at, text.font)
     }
 
+    fn bounds(min_x: f32, min_y: f32, max_x: f32, max_y: f32) -> Bounds {
+        Bounds {
+            min: v(min_x, min_y),
+            max: v(max_x, max_y),
+        }
+    }
+
+    /// The crop the crop tests make of a 200 × 150 capture.
+    const CROP: Region = Region {
+        left: 50,
+        top: 40,
+        right: 150,
+        bottom: 120,
+    };
+
     #[test]
     fn a_size_leaves_text_as_it_was_and_a_colour_recolours_it() {
         let hi = text(1);
@@ -2574,7 +2589,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_on_the_middle_of_a_slightly_bent_arrow_leaves_it_bent() {
+    fn a_slight_bend_survives_a_click_on_its_middle_or_dropping_an_end() {
         // Bent 1.5 capture pixels at 400 percent, then seen at 100 percent, where that is under 4
         // screen pixels.
         let bent = Annotation::Arrow(Arrow::straight(v(20.5, 50.5), v(180.5, 50.5)), RED).dropped(
@@ -2584,17 +2599,10 @@ mod tests {
         );
         assert_eq!(bent.handles()[2].1, v(100.5, 52.0));
         assert_eq!(bent.dropped(Handle::Bend, Vector2::zero(), 1.0), bent);
-    }
-
-    #[test]
-    fn dropping_an_end_or_the_body_leaves_a_slight_bend() {
-        let bent = Annotation::Arrow(Arrow::straight(v(20.5, 50.5), v(180.5, 50.5)), RED).dropped(
-            Handle::Bend,
-            v(0.0, 1.5),
-            4.0,
+        assert_eq!(
+            bent.dropped(Handle::Head, v(10.0, 0.0), 1.0),
+            bent.adjusted(Handle::Head, v(10.0, 0.0))
         );
-        let stretched = bent.dropped(Handle::Head, v(10.0, 0.0), 1.0);
-        assert_eq!(stretched, bent.adjusted(Handle::Head, v(10.0, 0.0)));
     }
 
     #[test]
@@ -2696,25 +2704,18 @@ mod tests {
     }
 
     #[test]
-    fn a_drag_of_4_by_4_pixels_places_a_rectangle() {
-        assert_eq!(
-            Bounds::from_drag(v(54.0, 46.0), v(50.0, 50.0)),
-            Some(Bounds {
-                min: v(50.0, 46.0),
-                max: v(54.0, 50.0),
-            })
-        );
-    }
-
-    #[test]
-    fn a_drag_under_4_pixels_either_way_places_no_rectangle() {
+    fn a_rectangle_needs_a_drag_of_4_pixels_both_ways() {
         let from = v(50.0, 50.0);
+        assert_eq!(
+            Bounds::from_drag(from, v(54.0, 46.0)),
+            Some(bounds(50.0, 46.0, 54.0, 50.0))
+        );
         for to in [
             v(53.0, 53.0),
             v(47.0, 47.0),
             v(150.0, 53.9),
             v(46.1, 10.0),
-            v(50.0, 50.0),
+            from,
         ] {
             assert_eq!(Bounds::from_drag(from, to), None, "to {to:?}");
         }
@@ -2722,19 +2723,8 @@ mod tests {
 
     #[test]
     fn a_crop_keeps_what_draws_inside_it_moved_to_its_origin_and_removes_the_rest() {
-        let bounds = |min_x: f32, min_y: f32, max_x: f32, max_y: f32| Bounds {
-            min: v(min_x, min_y),
-            max: v(max_x, max_y),
-        };
         let arrow =
             |tail: Vector2, head: Vector2| Annotation::Arrow(Arrow::straight(tail, head), RED);
-        // Of a 200 × 150 capture, cropped to (50,40)-(150,120).
-        let region = Region {
-            left: 50,
-            top: 40,
-            right: 150,
-            bottom: 120,
-        };
         let annotations = [
             // Inside.
             arrow(v(60.5, 50.5), v(100.5, 50.5)),
@@ -2762,7 +2752,7 @@ mod tests {
         ];
 
         assert_eq!(
-            crop(&annotations, region, 1.0),
+            crop(&annotations, CROP, 1.0),
             [
                 arrow(v(10.5, 10.5), v(50.5, 10.5)),
                 arrow(v(-29.5, 20.5), v(50.5, 20.5)),
@@ -2775,17 +2765,11 @@ mod tests {
 
     #[test]
     fn a_crop_keeps_an_arrow_whose_curve_dips_into_it_bent_as_it_was() {
-        let region = Region {
-            left: 50,
-            top: 40,
-            right: 150,
-            bottom: 120,
-        };
         // Its ends and the line between them are 20 above the crop, but its curve dips 20 in.
         let straight = Annotation::Arrow(Arrow::straight(v(60.5, 20.5), v(140.5, 20.5)), RED);
         let bent = straight.adjusted(Handle::Bend, v(0.0, 40.0));
-        assert_eq!(crop(std::slice::from_ref(&straight), region, 1.0), []);
-        let cropped = crop(std::slice::from_ref(&bent), region, 1.0);
+        assert_eq!(crop(std::slice::from_ref(&straight), CROP, 1.0), []);
+        let cropped = crop(std::slice::from_ref(&bent), CROP, 1.0);
         assert_eq!(
             cropped[0].handles(),
             [
@@ -2797,60 +2781,28 @@ mod tests {
     }
 
     #[test]
-    fn a_crop_keeps_a_solid_rectangle_inside_it_and_none_beyond_its_edge() {
-        let bounds = |min_x: f32, min_y: f32, max_x: f32, max_y: f32| Bounds {
-            min: v(min_x, min_y),
-            max: v(max_x, max_y),
-        };
-        let region = Region {
-            left: 50,
-            top: 40,
-            right: 150,
-            bottom: 120,
-        };
-        let annotations = [
-            // Around the whole crop, so all of the crop is its block.
-            Annotation::Rectangle(bounds(10.5, 10.5, 190.5, 140.5), RED, Fill::Solid),
-            // No outline or halo reaches past its edge: 49.5 stops short of the crop, 50.5 is in.
-            Annotation::Rectangle(bounds(10.5, 50.5, 49.5, 100.5), RED, Fill::Solid),
-            Annotation::Rectangle(bounds(10.5, 50.5, 50.5, 100.5), RED, Fill::Solid),
-        ];
-        assert_eq!(
-            crop(&annotations, region, 1.0),
-            [
-                Annotation::Rectangle(bounds(-39.5, -29.5, 140.5, 100.5), RED, Fill::Solid),
-                Annotation::Rectangle(bounds(-39.5, 10.5, 0.5, 60.5), RED, Fill::Solid),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_crop_keeps_a_tinted_rectangle_around_it_as_its_tint_is_inside_and_none_beyond_its_edge() {
-        let bounds = |min_x: f32, min_y: f32, max_x: f32, max_y: f32| Bounds {
-            min: v(min_x, min_y),
-            max: v(max_x, max_y),
-        };
-        let region = Region {
-            left: 50,
-            top: 40,
-            right: 150,
-            bottom: 120,
-        };
-        let annotations = [
-            // Around the whole crop: its outline is outside, but its tint covers the crop.
-            Annotation::Rectangle(bounds(10.5, 10.5, 190.5, 140.5), RED, Fill::Tint),
-            // Its stroke and halo reach 2.5 beyond its edge, as an outline's do: 47.5 stops at
-            // the crop's edge, 48.5 crosses it.
-            Annotation::Rectangle(bounds(10.5, 50.5, 47.5, 100.5), RED, Fill::Tint),
-            Annotation::Rectangle(bounds(10.5, 50.5, 48.5, 100.5), RED, Fill::Tint),
-        ];
-        assert_eq!(
-            crop(&annotations, region, 1.0),
-            [
-                Annotation::Rectangle(bounds(-39.5, -29.5, 140.5, 100.5), RED, Fill::Tint),
-                Annotation::Rectangle(bounds(-39.5, 10.5, -1.5, 60.5), RED, Fill::Tint),
-            ]
-        );
+    fn a_crop_keeps_a_filled_rectangle_around_it_and_none_beyond_its_reach() {
+        for (fill, edges) in [
+            // No outline or halo reaches past a solid one's edge: 49.5 stops short, 50.5 is in.
+            (Fill::Solid, [49.5, 50.5]),
+            // A tinted one's stroke and halo reach 2.5 beyond it, as an outline's do.
+            (Fill::Tint, [47.5, 48.5]),
+        ] {
+            let annotations = [
+                // Around the whole crop, so its fill covers the crop.
+                Annotation::Rectangle(bounds(10.5, 10.5, 190.5, 140.5), RED, fill),
+                Annotation::Rectangle(bounds(10.5, 50.5, edges[0], 100.5), RED, fill),
+                Annotation::Rectangle(bounds(10.5, 50.5, edges[1], 100.5), RED, fill),
+            ];
+            assert_eq!(
+                crop(&annotations, CROP, 1.0),
+                [
+                    Annotation::Rectangle(bounds(-39.5, -29.5, 140.5, 100.5), RED, fill),
+                    Annotation::Rectangle(bounds(-39.5, 10.5, edges[1] - 50.0, 60.5), RED, fill),
+                ],
+                "{fill:?}"
+            );
+        }
     }
 
     #[test]
@@ -2864,37 +2816,34 @@ mod tests {
             RED,
             Fill::Outline,
         );
-        let region = Region {
-            left: 50,
-            top: 40,
-            right: 150,
-            bottom: 120,
-        };
-        assert_eq!(crop(std::slice::from_ref(&rectangle), region, 1.0), []);
-        assert_eq!(crop(std::slice::from_ref(&rectangle), region, 2.0).len(), 1);
+        assert_eq!(crop(std::slice::from_ref(&rectangle), CROP, 1.0), []);
+        assert_eq!(crop(std::slice::from_ref(&rectangle), CROP, 2.0).len(), 1);
     }
 
     #[test]
-    fn a_drag_of_4_pixels_places_an_arrow_in_every_direction() {
+    fn an_arrow_needs_a_drag_of_4_pixels_in_any_direction() {
         let tail = v(50.0, 50.0);
-        for head in [v(54.0, 50.0), v(46.0, 50.0), v(50.0, 54.0), v(50.0, 46.0)] {
+        // Along each axis, and 4.1 along the diagonals though under 3 across and down.
+        for head in [
+            v(54.0, 50.0),
+            v(46.0, 50.0),
+            v(50.0, 54.0),
+            v(50.0, 46.0),
+            v(52.9, 52.9),
+            v(47.1, 47.1),
+        ] {
             assert_eq!(
                 Arrow::from_drag(tail, head),
-                Some(Arrow::straight(tail, head))
+                Some(Arrow::straight(tail, head)),
+                "to {head:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_shorter_drag_places_nothing_in_any_direction() {
-        let tail = v(50.0, 50.0);
+        // Then 3.96 along the diagonals, though nearly 3 across and down.
         for head in [
-            v(50.0, 50.0),
+            tail,
             v(52.0, 50.0),
             v(46.5, 50.0),
             v(50.0, 53.9),
-            v(50.0, 47.0),
-            // 3.96 pixels along the diagonals, though nearly 3 across and down.
             v(52.8, 52.8),
             v(47.2, 47.2),
             v(52.8, 47.2),
@@ -3168,15 +3117,6 @@ mod tests {
             let extent = across(count, Sizes::FIRST_RUN.counter, 1.0);
             assert!((extent.X - width).abs() < 0.01, "{count}: {extent:?}");
             assert_eq!(extent.Y, 32.0);
-        }
-    }
-
-    #[test]
-    fn a_diagonal_drag_of_4_pixels_places_an_arrow() {
-        // 4.1 pixels long, though under 3 across and down.
-        let tail = v(50.0, 50.0);
-        for head in [v(52.9, 52.9), v(47.1, 52.9), v(47.1, 47.1), v(52.9, 47.1)] {
-            assert!(Arrow::from_drag(tail, head).is_some(), "to {head:?}");
         }
     }
 }
