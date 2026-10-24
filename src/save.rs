@@ -36,7 +36,7 @@ use windows::{
     core::{Error, HSTRING, Result, w},
 };
 
-use crate::{editor, graphics, image::Image, settings, settings_window};
+use crate::{editor, graphics, image::Image, settings, settings_window, win32};
 
 /// The file a capture was saved to. A capture owns at most one, which saving again replaces.
 pub type SavedFile = Arc<Mutex<Option<PathBuf>>>;
@@ -120,18 +120,11 @@ fn first_name(image: &Image, target: Option<&Path>) -> String {
 }
 
 fn notify_failure(tray: HWND, name: &str) {
-    unsafe { crate::notify(tray, &format!("Couldn't save {name}")) };
+    crate::notify(tray, &format!("Couldn't save {name}"));
 }
 
 fn report(to: HWND, saved: bool) {
-    let _ = unsafe {
-        PostMessageW(
-            Some(to),
-            editor::WM_SAVED,
-            WPARAM(saved as usize),
-            LPARAM(0),
-        )
-    };
+    win32::post(to, editor::WM_SAVED, WPARAM(saved as usize), LPARAM(0));
 }
 
 /// Writes `image` to `target`, replacing any file there, or under the first free name in the save
@@ -195,6 +188,7 @@ fn place(
 
 /// Moves `from` to `to`, returning only once the move is on the disk.
 fn move_file(from: &Path, to: &Path, flags: MOVE_FILE_FLAGS) -> Result<()> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         MoveFileExW(
             &HSTRING::from(from),
@@ -255,6 +249,7 @@ pub fn choose_folder(start: PathBuf, owner: HWND) {
 /// the box.
 fn post_path(to: HWND, msg: u32, path: Option<PathBuf>) {
     let path = path.map(|path| Box::into_raw(Box::new(path)));
+    // SAFETY: Handles and integers only; if the post fails, the box in lparam is reclaimed below.
     let posted = unsafe {
         PostMessageW(
             Some(to),
@@ -265,6 +260,7 @@ fn post_path(to: HWND, msg: u32, path: Option<PathBuf>) {
     };
     // The window has gone, so nothing takes the path.
     if let (Err(_), Some(path)) = (posted, path) {
+        // SAFETY: The post failed, so nothing took `path`, which Box::into_raw made above.
         drop(unsafe { Box::from_raw(path) });
     }
 }
@@ -272,6 +268,7 @@ fn post_path(to: HWND, msg: u32, path: Option<PathBuf>) {
 /// Shows the folder picker for [`choose_folder`] and returns the folder chosen. Cancelling is an
 /// error.
 fn ask_folder(start: &Path, owner: HWND) -> Result<PathBuf> {
+    // SAFETY: Win32 and Shell calls on live handles, interfaces and locals.
     unsafe {
         let dialog: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
@@ -308,6 +305,7 @@ fn ask(taken: &SYSTEMTIME, file: Option<&Path>, owner: HWND) -> Result<PathBuf> 
             (folder, name)
         }
     };
+    // SAFETY: Win32 and Shell calls on live handles, interfaces and locals.
     unsafe {
         let dialog: IFileSaveDialog =
             CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
@@ -332,6 +330,7 @@ fn ask(taken: &SYSTEMTIME, file: Option<&Path>, owner: HWND) -> Result<PathBuf> 
 /// Shows `dialog`, owned by `owner`, and returns the file or folder chosen. Cancelling is an
 /// error.
 fn show(dialog: &IFileDialog, owner: HWND) -> Result<PathBuf> {
+    // SAFETY: COM calls on live interfaces; the shell's string is freed once, after it is copied.
     unsafe {
         dialog.Show(Some(owner))?;
         let path = dialog.GetResult()?.GetDisplayName(SIGDN_FILESYSPATH)?;
@@ -345,6 +344,7 @@ fn show(dialog: &IFileDialog, owner: HWND) -> Result<PathBuf> {
 pub fn open_folder() {
     in_shell(|| {
         if let Ok(folder) = folder() {
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe {
                 ShellExecuteW(
                     None,
@@ -363,6 +363,7 @@ pub fn open_folder() {
 /// single-threaded apartment the shell's extensions expect.
 fn in_shell(f: impl FnOnce() + Send + 'static) {
     std::thread::spawn(move || {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let _ = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
         f();
     });

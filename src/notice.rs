@@ -27,9 +27,8 @@ use windows::{
         UI::{
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, HWND_TOPMOST, KillTimer, LWA_ALPHA,
-                RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-                SetLayeredWindowAttributes, SetTimer, SetWindowDisplayAffinity, SetWindowPos,
+                CreateWindowExW, HWND_TOPMOST, LWA_ALPHA, RegisterClassW, SW_HIDE, SWP_NOACTIVATE,
+                SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos,
                 ShowWindow, WDA_EXCLUDEFROMCAPTURE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
                 WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
                 WS_EX_TRANSPARENT, WS_POPUP,
@@ -44,6 +43,7 @@ use crate::{
     annotation::color,
     bar, editor, graphics, settings,
     theme::{self, Palette},
+    win32,
 };
 
 /// Measurements in logical pixels: the pill's height, either side of its content, between its
@@ -80,6 +80,7 @@ struct Notice {
 }
 
 pub fn register(instance: HINSTANCE) -> Result<()> {
+    // SAFETY: `window_proc` is a WNDPROC, and the class names and cursors are static.
     unsafe {
         let class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
@@ -112,6 +113,7 @@ pub fn show(text: &str, screen: HMONITOR) {
 /// Shows a Notice reading `text` just below and to the right of `pointer`, on the screen, with a
 /// chip of `colour`, an sRGB colour, before the text, in place of one still showing.
 pub fn show_picked(text: &str, pointer: POINT, colour: u32) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let screen = unsafe { MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST) };
     show_on(text, screen, Some(Pick { pointer, colour }));
 }
@@ -136,6 +138,7 @@ impl Notice {
     /// A hidden Notice, above every window but never in front of the keyboard.
     fn new() -> Result<Notice> {
         let graphics = graphics::get()?;
+        // SAFETY: Win32 and DirectComposition calls on live handles, interfaces and locals.
         unsafe {
             // No redirection bitmap: the composition surface is all the window shows, with its
             // corners see-through. Layered and transparent, so a click passes through to whatever
@@ -189,6 +192,7 @@ impl Notice {
     /// Draws `text` and shows it at the bottom centre of `screen`, or for a pick beside its
     /// pointer with a chip of its colour, opaque, for its whole stay.
     fn show(&mut self, text: &str, screen: HMONITOR, pick: Option<Pick>) -> Result<()> {
+        // SAFETY: Win32 and COM calls on live handles, interfaces and locals.
         unsafe {
             let (mut dpi, mut _dpi_y) = (96, 96);
             GetDpiForMonitor(screen, MDT_EFFECTIVE_DPI, &mut dpi, &mut _dpi_y)?;
@@ -252,7 +256,7 @@ impl Notice {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )?;
             self.fading_since = None;
-            if SetTimer(Some(self.hwnd), TIMER, STAY_MS, None) == 0 {
+            if !win32::set_timer(self.hwnd, TIMER, STAY_MS) {
                 return Err(Error::from_thread());
             }
         }
@@ -262,18 +266,20 @@ impl Notice {
     /// Its stay is over, or a step of its fade is due. With Windows' animation effects off, it
     /// goes at once.
     fn tick(&mut self) {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let now = unsafe { GetTickCount() };
         let since = match self.fading_since {
             Some(since) => since,
             None if editor::animates() => {
                 self.fading_since = Some(now);
-                unsafe { SetTimer(Some(self.hwnd), TIMER, FADE_STEP_MS, None) };
+                win32::set_timer(self.hwnd, TIMER, FADE_STEP_MS);
                 now
             }
             None => return self.hide(),
         };
         let elapsed = now.wrapping_sub(since);
         let faded = elapsed >= FADE_MS
+            // SAFETY: COM calls on live interfaces and pointers to live locals.
             || unsafe {
                 self.visual
                     .SetOpacity2(1.0 - elapsed as f32 / FADE_MS as f32)
@@ -288,8 +294,9 @@ impl Notice {
     /// Hides it, faded or not, until the next Notice.
     fn hide(&mut self) {
         self.fading_since = None;
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIMER);
+            win32::kill_timer(self.hwnd, TIMER);
             let _ = ShowWindow(self.hwnd, SW_HIDE);
         }
     }
@@ -314,6 +321,7 @@ fn draw(
     chip: Option<u32>,
     scale: f32,
 ) -> Result<()> {
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     let brush = |rgb| unsafe { context.CreateSolidColorBrush(&color(rgb), None) };
     let (border, fill, ink) = (
         brush(palette.tooltip_border)?,
@@ -334,6 +342,7 @@ fn draw(
     let before = chip.map_or(0.0, |_| chip_width(size.Y, scale));
     let left = ((width - before - size.X) / 2.0).round();
     let top = ((height - size.Y) / 2.0).round();
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {
         context.Clear(Some(&D2D1_COLOR_F::default()));
         context.FillRoundedRectangle(&pill(0.0), &border);
@@ -384,7 +393,7 @@ unsafe extern "system" fn window_proc(
             });
             LRESULT(0)
         }
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => win32::default_proc(hwnd, msg, wparam, lparam),
     }
 }
 

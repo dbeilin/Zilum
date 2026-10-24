@@ -106,6 +106,7 @@ pub struct Text {
 impl Text {
     /// Text at `scale`, physical pixels per logical pixel.
     pub fn new(scale: f32) -> Result<Text> {
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe {
             let writer: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let weighted = |family: &HSTRING, size: f32, weight: DWRITE_FONT_WEIGHT| {
@@ -183,6 +184,7 @@ impl Text {
     /// no wider than `width`.
     pub fn message(&self, text: &str, width: f32) -> Result<IDWriteTextLayout> {
         let text: Vec<u16> = text.encode_utf16().collect();
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe {
             self.writer
                 .CreateTextLayout(&text, &self.tip, width, f32::MAX)
@@ -209,11 +211,13 @@ impl Text {
     /// badges are placed.
     pub fn counter_digit(&self) -> Result<IDWriteTextLayout> {
         let text: Vec<u16> = "1".encode_utf16().collect();
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe { self.writer.CreateTextLayout(&text, &self.digit, 0.0, 0.0) }
     }
 
     fn icon_in(&self, glyph: char, fallback: &str, small: bool) -> Result<IDWriteTextLayout> {
         for (font, format, small_format) in &self.icons {
+            // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
             if unsafe { font.HasCharacter(glyph as u32)? }.as_bool() {
                 let format = if small { small_format } else { format };
                 return self.layout(&glyph.to_string(), format);
@@ -224,6 +228,7 @@ impl Text {
 
     fn layout(&self, text: &str, format: &IDWriteTextFormat) -> Result<IDWriteTextLayout> {
         let text: Vec<u16> = text.encode_utf16().collect();
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe {
             self.writer
                 .CreateTextLayout(&text, format, f32::MAX, f32::MAX)
@@ -248,6 +253,7 @@ pub fn lines(layout: &IDWriteTextLayout) -> Result<u32> {
 /// What DirectWrite measured of `layout`.
 fn metrics(layout: &IDWriteTextLayout) -> Result<DWRITE_TEXT_METRICS> {
     let mut metrics = DWRITE_TEXT_METRICS::default();
+    // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
     unsafe { layout.GetMetrics(&mut metrics)? };
     Ok(metrics)
 }
@@ -303,6 +309,7 @@ pub struct Paint {
 
 impl Paint {
     pub fn new(context: &ID2D1DeviceContext, palette: &Palette) -> Result<Paint> {
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         let brush = |rgb| unsafe { context.CreateSolidColorBrush(&color(rgb), None) };
         Ok(Paint {
             context: context.clone(),
@@ -328,6 +335,7 @@ impl Paint {
 
     /// The bar covering `area`, with a hairline on its last row between it and what is below.
     pub fn bar(&self, area: &D2D_RECT_F) {
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.FillRectangle(area, &self.bar);
             self.context.FillRectangle(
@@ -343,6 +351,7 @@ impl Paint {
     /// A flyout's panel covering `area`, in the bar's colour inside a hairline, its corners
     /// rounded by `radius` physical pixels. It casts no shadow.
     pub fn panel(&self, area: &D2D_RECT_F, radius: f32) {
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.FillRoundedRectangle(
                 &D2D1_ROUNDED_RECT {
@@ -372,6 +381,7 @@ impl Paint {
             Tint::Pressed => &self.pressed,
             Tint::Chosen => &self.chosen,
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.FillRoundedRectangle(
                 &D2D1_ROUNDED_RECT {
@@ -386,6 +396,7 @@ impl Paint {
 
     /// A hairline between groups, covering `area`.
     pub fn divider(&self, area: &D2D_RECT_F) {
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe { self.context.FillRectangle(area, &self.divider) };
     }
 
@@ -395,6 +406,7 @@ impl Paint {
         let (width, height) = ((MARK_WIDTH * scale).round(), (MARK_HEIGHT * scale).round());
         let left = ((area.left + area.right - width) / 2.0).round();
         let bottom = area.bottom - (MARK_INSET * scale).round();
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.FillRoundedRectangle(
                 &D2D1_ROUNDED_RECT {
@@ -432,12 +444,14 @@ impl Paint {
         let radius = COUNTER_DIAMETER * scale / 2.0;
         let middle = centre(area);
         // With its layout's box empty, the overhangs are the ink's edges from where it is drawn.
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         let ink = unsafe { digit.GetOverhangMetrics()? };
         let at = middle
             - Vector2 {
                 X: (ink.right - ink.left) / 2.0,
                 Y: (ink.bottom - ink.top) / 2.0,
             };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.FillEllipse(
                 &D2D1_ELLIPSE {
@@ -475,6 +489,7 @@ impl Paint {
             Y: way.X,
         };
         let (length, half_width) = (ARROW_HEAD_LENGTH * scale, ARROW_HEAD_HALF_WIDTH * scale);
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             let factory = self.context.GetFactory()?;
             // From `point`, the head pointing along `along`.
@@ -519,6 +534,7 @@ impl Paint {
         let stroke = RECTANGLE_STROKE * scale;
         // The outline inside the square, so a Solid one is no smaller.
         let line = inset(&square, stroke / 2.0);
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             match fill {
                 Fill::Solid => self.context.FillRectangle(&square, &self.text),
@@ -542,6 +558,7 @@ impl Paint {
             radiusX: radius,
             radiusY: radius,
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.FillEllipse(&spot, fill);
             self.context
@@ -578,6 +595,7 @@ impl Paint {
             Some(Tint::Pressed) => 0.8,
             Some(Tint::Chosen) | None => 1.0,
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.accent.SetOpacity(opacity);
             self.context.FillRoundedRectangle(
@@ -611,6 +629,7 @@ impl Paint {
             bottom: area.bottom - 1.0,
             ..*area
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe { self.context.FillRectangle(&above, fill) };
         self.centred(icon, area, Tone::OnClose)
     }
@@ -620,6 +639,7 @@ impl Paint {
     /// pixels.
     pub fn field(&self, area: &D2D_RECT_F, radius: f32) {
         let edge = inset(area, 0.5);
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.FillRoundedRectangle(
                 &D2D1_ROUNDED_RECT {
@@ -647,6 +667,7 @@ impl Paint {
     pub fn focus(&self, area: &D2D_RECT_F, radius: f32, scale: f32) {
         let (gap, width) = ((FOCUS_GAP * scale).round(), (FOCUS_WIDTH * scale).round());
         let out = gap + width / 2.0;
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.DrawRoundedRectangle(
                 &D2D1_ROUNDED_RECT {
@@ -678,6 +699,7 @@ impl Paint {
         } else {
             (area.left + half, &self.secondary)
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             if on {
                 self.context.FillRoundedRectangle(&pill, &self.accent);
@@ -731,6 +753,7 @@ impl Paint {
             radiusY: radius,
         };
         let dot = if hover { SLIDER_DOT_HOVER } else { SLIDER_DOT };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context
                 .FillRoundedRectangle(&track(at, area.right - half), &self.secondary);
@@ -768,6 +791,7 @@ impl Paint {
                 position,
                 color: color(rgb),
             };
+            // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
             unsafe {
                 let stops = self.context.CreateGradientStopCollection(
                     &[
@@ -822,6 +846,7 @@ impl Paint {
             radiusY: radius,
         };
         let corner = PICTURE_RADIUS * scale;
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             if shadow {
                 let down = PICTURE_SHADOW_OFFSET * scale;
@@ -896,6 +921,7 @@ impl Paint {
             Tone::OnAccent => &self.on_accent,
             Tone::OnClose => &self.on_close,
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context
                 .DrawTextLayout(at, layout, brush, D2D1_DRAW_TEXT_OPTIONS_NONE)

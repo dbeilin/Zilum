@@ -111,6 +111,8 @@ pub fn read(
 ) -> Result<Image> {
     let graphics = graphics::get()?;
     let device = &graphics.d3d;
+    // SAFETY: Direct3D calls on live interfaces; `crop` outlives the buffer made from it, and each
+    // row read lies inside the mapped texture.
     unsafe {
         let mut frame_desc = D3D11_TEXTURE2D_DESC::default();
         frame.GetDesc(&mut frame_desc);
@@ -216,6 +218,7 @@ fn shader() -> Result<ID3D11ComputeShader> {
 }
 
 fn compile() -> Result<ID3D11ComputeShader> {
+    // SAFETY: SHADER is passed with its length, and the blob is read only within its own size.
     unsafe {
         let mut code: Option<ID3DBlob> = None;
         D3DCompile(
@@ -245,6 +248,7 @@ fn compile() -> Result<ID3D11ComputeShader> {
 /// Physical pixels per logical pixel on `monitor`. 1 when that cannot be told.
 fn scale(monitor: HMONITOR) -> f32 {
     let (mut dpi, mut _dpi_y) = (96, 96);
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     match unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut _dpi_y) } {
         Ok(()) => dpi as f32 / 96.0,
         Err(_) => 1.0,
@@ -254,6 +258,7 @@ fn scale(monitor: HMONITOR) -> f32 {
 /// How many times scRGB's 80 nits the screen shows SDR white at. 1 when that cannot be told,
 /// including when two paths share the screen's name and it is ambiguous which one is meant.
 fn sdr_white(monitor: HMONITOR) -> f32 {
+    // SAFETY: MONITORINFOEXW starts with a MONITORINFO, and cbSize says it is the larger one.
     unsafe {
         let mut info = MONITORINFOEXW::default();
         info.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;

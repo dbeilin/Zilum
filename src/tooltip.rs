@@ -20,9 +20,9 @@ use windows::{
         },
         System::LibraryLoader::GetModuleHandleW,
         UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, HTTRANSPARENT, RegisterClassW, SW_HIDE,
-            SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SetWindowDisplayAffinity, SetWindowPos,
-            ShowWindow, WDA_EXCLUDEFROMCAPTURE, WM_NCHITTEST, WNDCLASSW, WS_EX_NOACTIVATE,
+            CreateWindowExW, HTTRANSPARENT, RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_NOZORDER,
+            SWP_SHOWWINDOW, SetWindowDisplayAffinity, SetWindowPos, ShowWindow,
+            WDA_EXCLUDEFROMCAPTURE, WM_NCHITTEST, WNDCLASSW, WS_EX_NOACTIVATE,
             WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_POPUP,
         },
     },
@@ -30,7 +30,7 @@ use windows::{
 };
 use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::{annotation::color, bar, graphics, theme::Palette};
+use crate::{annotation::color, bar, graphics, theme::Palette, win32};
 
 /// Measurements in logical pixels: between the button and the tooltip, either side of the text,
 /// above and below it, and the corners.
@@ -40,6 +40,7 @@ const PADDING_Y: f32 = 5.0;
 const RADIUS: f32 = 4.0;
 
 pub fn register(instance: HINSTANCE) -> Result<()> {
+    // SAFETY: `window_proc` is a WNDPROC, and the class names and cursors are static.
     unsafe {
         let class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
@@ -67,6 +68,7 @@ impl Tooltip {
     /// A hidden tooltip for the window `owner`, which keeps it above itself.
     pub fn new(owner: HWND) -> Result<Tooltip> {
         let graphics = graphics::get()?;
+        // SAFETY: Win32 and DirectComposition calls on live handles, interfaces and locals.
         unsafe {
             // No redirection bitmap: the composition surface is all the window shows, with its
             // corners see-through.
@@ -121,6 +123,7 @@ impl Tooltip {
             size.X.ceil() + 2.0 * px(PADDING_X),
             size.Y.ceil() + 2.0 * px(PADDING_Y),
         );
+        // SAFETY: Win32 and COM calls on live handles, interfaces and locals.
         unsafe {
             let monitor = MonitorFromRect(&button, MONITOR_DEFAULTTONEAREST);
             let mut info = MONITORINFO {
@@ -170,6 +173,7 @@ impl Tooltip {
     }
 
     pub fn hide(&self) {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
     }
 }
@@ -184,6 +188,7 @@ fn draw(
     scale: f32,
     palette: &Palette,
 ) -> Result<()> {
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     let brush = |rgb| unsafe { context.CreateSolidColorBrush(&color(rgb), None) };
     let (border, fill, ink) = (
         brush(palette.tooltip_border)?,
@@ -201,6 +206,7 @@ fn draw(
         radiusX: radius,
         radiusY: radius,
     };
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {
         context.Clear(Some(&D2D1_COLOR_F::default()));
         context.FillRoundedRectangle(&rounded(0.0, radius), &border);
@@ -228,7 +234,7 @@ unsafe extern "system" fn window_proc(
         // The pointer passes through to the editor under it, which hides the tooltip as it
         // leaves the bar.
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => win32::default_proc(hwnd, msg, wparam, lparam),
     }
 }
 

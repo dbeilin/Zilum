@@ -28,8 +28,8 @@ use windows::{
                 CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, DC_BRUSH, DEFAULT_CHARSET,
                 DeleteObject, FW_NORMAL, GetDC, GetMonitorInfoW, GetStockObject, GetTextMetricsW,
                 HDC, HFONT, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
-                MonitorFromPoint, OUT_DEFAULT_PRECIS, ReleaseDC, ScreenToClient, SelectObject,
-                SetBkColor, SetDCBrushColor, SetTextColor, TEXTMETRICW, ValidateRect,
+                MonitorFromPoint, OUT_DEFAULT_PRECIS, ReleaseDC, SelectObject, SetBkColor,
+                SetDCBrushColor, SetTextColor, TEXTMETRICW, ValidateRect,
             },
         },
         System::LibraryLoader::GetModuleHandleW,
@@ -37,21 +37,20 @@ use windows::{
             Controls::EM_SETSEL,
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{
-                GetAsyncKeyState, GetFocus, GetKeyState, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL,
-                MOD_SHIFT, ReleaseCapture, SetCapture, SetFocus, TME_LEAVE, TRACKMOUSEEVENT,
-                TrackMouseEvent, VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LWIN,
-                VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB,
+                GetAsyncKeyState, GetFocus, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_SHIFT,
+                SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VIRTUAL_KEY, VK_BACK,
+                VK_CONTROL, VK_DELETE, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT,
+                VK_SPACE, VK_TAB,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, ES_AUTOHSCROLL,
-                GetCursorPos, GetDlgItem, GetForegroundWindow, GetWindowTextLengthW,
-                GetWindowTextW, HC_ACTION, HHOOK, HMENU, HTCAPTION, HTCLIENT, HTNOWHERE, IDC_ARROW,
-                IsChild, KBDLLHOOKSTRUCT, LoadCursorW, MSG, PostMessageW, RegisterClassExW,
-                SC_KEYMENU, SM_CXICON, SM_CXSMICON, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
-                SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetWindowPos,
-                SetWindowTextW, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx, WA_INACTIVE,
-                WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPOS, WM_ACTIVATE, WM_APP,
-                WM_CAPTURECHANGED, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED,
+                CallNextHookEx, CreateWindowExW, ES_AUTOHSCROLL, GetCursorPos, GetDlgItem,
+                GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, HC_ACTION, HHOOK, HMENU,
+                HTCAPTION, HTCLIENT, HTNOWHERE, IDC_ARROW, IsChild, KBDLLHOOKSTRUCT, LoadCursorW,
+                MSG, RegisterClassExW, SC_KEYMENU, SM_CXICON, SM_CXSMICON, SW_SHOW, SWP_NOACTIVATE,
+                SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
+                SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx,
+                WA_INACTIVE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPOS, WM_ACTIVATE,
+                WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED,
                 WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
                 WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT,
                 WM_RBUTTONDOWN, WM_SETFONT, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
@@ -75,6 +74,7 @@ use crate::{
     settings_layout::{self, Layout, Space, Stop, Target},
     startup,
     theme::{self, Palette, Theme},
+    win32,
 };
 
 /// Posted to the window when the folder picker closes: `lparam` is the folder chosen, boxed, or
@@ -172,6 +172,7 @@ struct State {
 }
 
 pub fn register(instance: HINSTANCE) -> Result<()> {
+    // SAFETY: `window_proc` is a WNDPROC, and the class names and cursors are static.
     unsafe {
         let class = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -198,8 +199,9 @@ pub fn open(tray: HWND) {
     TRAY.set(tray);
     let open = WINDOW.get();
     if open.is_invalid() {
-        let _ = unsafe { create() };
+        let _ = create();
     } else {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let _ = unsafe { SetForegroundWindow(open) };
     }
 }
@@ -212,6 +214,7 @@ pub fn open(tray: HWND) {
 pub fn handles(msg: &MSG) -> bool {
     let window = WINDOW.get();
     if window.is_invalid()
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         || !(msg.hwnd == window || unsafe { IsChild(window, msg.hwnd) }.as_bool())
     {
         return false;
@@ -229,7 +232,7 @@ pub fn handles(msg: &MSG) -> bool {
         WM_KEYUP | WM_SYSKEYUP => listening,
         WM_KEYDOWN | WM_SYSKEYDOWN => match key {
             VK_TAB => {
-                let back = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+                let back = win32::key_down(VK_SHIFT);
                 with(|state| {
                     state.move_focus(Some(settings_layout::next(state.focus, back)), true)
                 });
@@ -248,7 +251,7 @@ pub fn handles(msg: &MSG) -> bool {
         },
         // A press on the folder field gives it the keyboard once it is dispatched.
         WM_LBUTTONDOWN | WM_RBUTTONDOWN if msg.hwnd != window => {
-            let _ = unsafe { PostMessageW(Some(window), WM_FOCUS_MOVED, WPARAM(0), LPARAM(0)) };
+            win32::post(window, WM_FOCUS_MOVED, WPARAM(0), LPARAM(0));
             false
         }
         _ => false,
@@ -268,7 +271,7 @@ fn close(window: HWND) {
         state.leave(focus);
     });
     CLOSING.set(true);
-    let _ = unsafe { DestroyWindow(window) };
+    win32::destroy(window);
 }
 
 /// The native field of the window `window` for `stop`, the folder field, or the window itself
@@ -282,6 +285,7 @@ fn native(window: HWND, stop: Option<Stop>) -> HWND {
 
 /// The control of the window `hwnd` with the id `id`.
 fn control(hwnd: HWND, id: i32) -> HWND {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe { GetDlgItem(Some(hwnd), id) }.unwrap_or_default()
 }
 
@@ -300,6 +304,7 @@ fn hook_keyboard(on: bool) {
     if on != hook.is_invalid() {
         return;
     }
+    // SAFETY: `keyboard_hook` is a HOOKPROC, and the hook is this thread's own.
     unsafe {
         if on {
             let instance = GetModuleHandleW(None).ok().map(HINSTANCE::from);
@@ -317,6 +322,7 @@ fn hook_keyboard(on: bool) {
 /// the window is in front, and posts it to the window. Every key pressed anywhere waits for this,
 /// so it only asks Windows a few questions that never block, posts and returns.
 unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // SAFETY: At HC_ACTION, the lparam of a WH_KEYBOARD_LL hook points to a KBDLLHOOKSTRUCT.
     unsafe {
         let window = WINDOW.get();
         let press = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
@@ -340,7 +346,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
                 .filter(|(key, _)| held(*key))
                 .fold(0, |modifiers, (_, modifier)| modifiers | modifier.0);
                 let lparam = LPARAM(modifiers as isize);
-                let _ = PostMessageW(Some(window), WM_FIELD_KEY, WPARAM(vk.0 as usize), lparam);
+                win32::post(window, WM_FIELD_KEY, WPARAM(vk.0 as usize), lparam);
                 return LRESULT(1);
             }
         }
@@ -368,7 +374,8 @@ fn window_size(layout: &Layout, dpi: u32) -> Result<(i32, i32)> {
 
 /// Creates the window centred on the screen under the pointer, at that screen's DPI, and shows
 /// it in front.
-unsafe fn create() -> Result<()> {
+fn create() -> Result<()> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         let mut pointer = POINT::default();
         GetCursorPos(&mut pointer)?;
@@ -406,7 +413,7 @@ unsafe fn create() -> Result<()> {
         let state = match made {
             Ok(state) => state,
             Err(error) => {
-                let _ = DestroyWindow(hwnd);
+                win32::destroy(hwnd);
                 return Err(error);
             }
         };
@@ -426,7 +433,9 @@ impl State {
     /// settings as they are.
     fn new(hwnd: HWND, dpi: u32, layout: Layout) -> Result<State> {
         let graphics = graphics::get()?;
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let instance = unsafe { GetModuleHandleW(None)? };
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let child = |id: i32, class: PCWSTR, style: u32, ex_style: WINDOW_EX_STYLE| unsafe {
             CreateWindowExW(
                 ex_style,
@@ -453,12 +462,14 @@ impl State {
 
         let palette = theme::palette(settings::current().theme);
         set_field_colours(&palette);
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let context = unsafe {
             graphics
                 .d2d_device
                 .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?
         };
         // One unit is one physical pixel.
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe { context.SetDpi(96.0, 96.0) };
         let swap_chain =
             graphics.window_swap_chain(hwnd, layout.width as u32, layout.height as u32)?;
@@ -491,6 +502,7 @@ impl State {
     /// Gives the folder field Segoe UI for the window's DPI.
     fn make_fonts(&mut self) {
         let size = (FIELD_FONT * scale(self.dpi)).round() as i32;
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
             let font = CreateFontW(
                 -size,
@@ -530,6 +542,7 @@ impl State {
     /// Deletes the folder field's font, which the window made.
     fn drop_font(&mut self) {
         if !self.field_font.is_invalid() {
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { DeleteObject(self.field_font.into()) };
         }
     }
@@ -540,6 +553,7 @@ impl State {
         let padding = (FIELD_PADDING * scale(self.dpi)).round();
         let top =
             (folder.top + (folder.bottom - folder.top - self.field_line as f32) / 2.0).round();
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
             let _ = SetWindowPos(
                 control(self.hwnd, ID_FOLDER),
@@ -570,6 +584,7 @@ impl State {
         self.layout = layout;
         if resized {
             let (width, height) = window_size(&self.layout, self.dpi)?;
+            // SAFETY: Win32 and Direct3D calls on live handles, interfaces and locals.
             unsafe {
                 self.swap_chain.ResizeBuffers(
                     0,
@@ -599,6 +614,7 @@ impl State {
         self.dpi = dpi;
         self.text = bar::Text::new(scale(dpi))?;
         self.make_fonts();
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
             let _ = SetWindowPos(
                 self.hwnd,
@@ -620,12 +636,14 @@ impl State {
         self.paint = Paint::new(&self.context, &self.palette)?;
         set_field_colours(&self.palette);
         frame::border(self.hwnd, self.palette.dark);
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let _ = unsafe { InvalidateRect(Some(control(self.hwnd, ID_FOLDER)), None, true) };
         self.present()
     }
 
     /// Draws the whole window and shows it.
     fn present(&mut self) -> Result<()> {
+        // SAFETY: COM calls on live interfaces and pointers to live locals.
         unsafe {
             let buffer: IDXGISurface = self.swap_chain.GetBuffer(0)?;
             let target = self.context.CreateBitmapFromDxgiSurface(
@@ -838,6 +856,7 @@ impl State {
             _ => None,
         });
         let field = native(self.hwnd, to);
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
             let _ = SetFocus(Some(field));
             // A dialog selects the text of a field the keyboard comes to, so typing replaces it.
@@ -854,6 +873,7 @@ impl State {
     /// Follows the keyboard into the folder field when the user clicked it.
     fn focus_moved(&mut self) {
         let folder = Some(Stop::Folder);
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         if native(self.hwnd, folder) == unsafe { GetFocus() } && self.focus != folder {
             let from = self.focus;
             self.focus = folder;
@@ -865,6 +885,7 @@ impl State {
 
     /// Gives the keyboard back to the control that had it when the window was last left.
     fn restore_focus(&self) {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let _ = unsafe { SetFocus(Some(native(self.hwnd, self.focus))) };
     }
 
@@ -1065,6 +1086,7 @@ fn bgr(rgb: u32) -> COLORREF {
 }
 
 fn text(control: HWND) -> String {
+    // SAFETY: The buffer has room for the text and its terminator.
     unsafe {
         let mut text = vec![0u16; GetWindowTextLengthW(control) as usize + 1];
         let length = GetWindowTextW(control, &mut text) as usize;
@@ -1073,6 +1095,7 @@ fn text(control: HWND) -> String {
 }
 
 fn set_text(control: HWND, text: &str) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let _ = unsafe { SetWindowTextW(control, &HSTRING::from(text)) };
 }
 
@@ -1093,6 +1116,7 @@ unsafe extern "system" fn window_proc(
     match msg {
         WM_PAINT => {
             let _ = with(State::present);
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { ValidateRect(Some(hwnd), None) };
         }
         // The swap chain covers the whole window; erasing would only flicker.
@@ -1101,6 +1125,7 @@ unsafe extern "system" fn window_proc(
         WM_CTLCOLOREDIT => {
             let (ink, fill) = FIELD_COLOURS.get();
             let dc = HDC(wparam.0 as *mut _);
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             unsafe {
                 SetTextColor(dc, ink);
                 SetBkColor(dc, fill);
@@ -1111,13 +1136,12 @@ unsafe extern "system" fn window_proc(
         // Windows' app mode or accent changed.
         _ if theme::changed(msg, lparam) => {
             let _ = with(State::retheme);
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         WM_NCCALCSIZE => frame::calc_size(hwnd, STYLE, wparam, lparam),
         // The title row moves the window, except over Close; nothing resizes it.
         WM_NCHITTEST => {
-            let mut at = pointer(lparam);
-            let _ = unsafe { ScreenToClient(hwnd, &mut at) };
+            let at = win32::to_client(hwnd, pointer(lparam));
             let part = with(|state| {
                 let layout = &state.layout;
                 let inside = at.x >= 0 && at.x < layout.width && at.y >= 0 && at.y < layout.height;
@@ -1138,24 +1162,26 @@ unsafe extern "system" fn window_proc(
         // listening field stops and shows what it held.
         WM_NCLBUTTONDOWN => {
             with(State::stop_listening);
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         WM_RBUTTONDOWN => {
             with(State::stop_listening);
         }
         // Fixed in size: snapping or maximising it moves it at most.
         WM_WINDOWPOSCHANGING => {
+            // SAFETY: The lparam of WM_WINDOWPOSCHANGING points to the WINDOWPOS to change.
             let position = unsafe { &mut *(lparam.0 as *mut WINDOWPOS) };
             let (width, height) = SIZE.get();
             if position.flags.0 & SWP_NOSIZE.0 == 0 && width > 0 {
                 (position.cx, position.cy) = (width, height);
             }
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         // Alt alone would open the window's menu, which it never shows.
         WM_SYSCOMMAND if wparam.0 & 0xFFF0 == SC_KEYMENU as usize => {}
         WM_FOLDER_CHOSEN => {
             if lparam.0 != 0 {
+                // SAFETY: A nonzero lparam is the Box<PathBuf> post_path leaked for this message.
                 let folder = unsafe { Box::from_raw(lparam.0 as *mut PathBuf) };
                 set_text(control(hwnd, ID_FOLDER), &folder.to_string_lossy());
                 with(State::take_folder);
@@ -1193,6 +1219,7 @@ unsafe extern "system" fn window_proc(
                     hwndTrack: hwnd,
                     dwHoverTime: 0,
                 };
+                // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
                 let _ = unsafe { TrackMouseEvent(&mut track) };
             }
         }
@@ -1222,7 +1249,7 @@ unsafe extern "system" fn window_proc(
                 };
                 state.move_focus(stop, listen);
             });
-            unsafe { SetCapture(hwnd) };
+            win32::capture(hwnd);
         }
         WM_LBUTTONUP => {
             let at = pointer(lparam);
@@ -1234,7 +1261,7 @@ unsafe extern "system" fn window_proc(
                 })
             })
             .flatten();
-            let _ = unsafe { ReleaseCapture() };
+            win32::release_capture();
             match pressed {
                 Some(Target::Close) => close(hwnd),
                 Some(target) => {
@@ -1264,11 +1291,12 @@ unsafe extern "system" fn window_proc(
                 }
             });
             if !active {
-                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+                return win32::default_proc(hwnd, msg, wparam, lparam);
             }
         }
         WM_CLOSE => close(hwnd),
         WM_DPICHANGED => {
+            // SAFETY: The lparam of WM_DPICHANGED points to the suggested RECT.
             let suggested = unsafe { *(lparam.0 as *const RECT) };
             let dpi = (wparam.0 & 0xFFFF) as u32;
             let at = POINT {
@@ -1286,7 +1314,7 @@ unsafe extern "system" fn window_proc(
             }
             CLOSING.set(false);
         }
-        _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => return win32::default_proc(hwnd, msg, wparam, lparam),
     }
     LRESULT(0)
 }

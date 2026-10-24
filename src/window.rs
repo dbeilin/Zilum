@@ -12,9 +12,9 @@ use windows::{
             Accessibility::{HWINEVENTHOOK, SetWinEventHook},
             WindowsAndMessaging::{
                 EVENT_SYSTEM_FOREGROUND, EnumWindows, GA_ROOT, GWL_EXSTYLE, GetAncestor,
-                GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
-                IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, WINDOW_EX_STYLE,
-                WINEVENT_OUTOFCONTEXT, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+                GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow,
+                IsWindowVisible, SetForegroundWindow, WINDOW_EX_STYLE, WINEVENT_OUTOFCONTEXT,
+                WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
             },
         },
     },
@@ -22,6 +22,7 @@ use windows::{
 };
 
 use crate::selection::Point;
+use crate::win32;
 
 /// Window classes of the taskbar, on each screen, and of the tray icons it hides.
 const TASKBAR: [&str; 4] = [
@@ -43,6 +44,7 @@ thread_local! {
 /// Starts remembering which window was in front before the taskbar was, so a capture from the
 /// tray hands the keyboard back to it. Call once, on the UI thread.
 pub fn remember_front() {
+    // SAFETY: `foreground_changed` is a WINEVENTPROC, called on this thread.
     unsafe {
         came_to_front(GetForegroundWindow());
         // Never unhooked: Zilum remembers for as long as it runs.
@@ -102,10 +104,12 @@ pub fn capturable(window: HWND) -> Option<HWND> {
 pub fn shown() -> Vec<Shown> {
     let mut windows: Vec<HWND> = Vec::new();
     unsafe extern "system" fn add(window: HWND, list: LPARAM) -> BOOL {
+        // SAFETY: `list` is `windows` below, used by nothing else during EnumWindows.
         unsafe { (*(list.0 as *mut Vec<HWND>)).push(window) };
         true.into()
     }
     // Front to back is the order EnumWindows gives.
+    // SAFETY: `add` is a WNDENUMPROC, and `windows` outlives the enumeration it is passed to.
     let _ = unsafe { EnumWindows(Some(add), LPARAM(&mut windows as *mut Vec<HWND> as isize)) };
     windows.into_iter().filter_map(on_screen).collect()
 }
@@ -131,6 +135,7 @@ fn on_screen(window: HWND) -> Option<Shown> {
 /// What `window` is to a capture, or none if the screen does not show it: hidden, minimised or
 /// cloaked.
 fn kind(window: HWND) -> Option<Kind> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         if !IsWindowVisible(window).as_bool() || IsIconic(window).as_bool() {
             return None;
@@ -153,7 +158,7 @@ fn kind(window: HWND) -> Option<Kind> {
         Kind::Shell
     } else {
         styled(WINDOW_EX_STYLE(
-            unsafe { GetWindowLongPtrW(window, GWL_EXSTYLE) } as u32,
+            win32::window_long(window, GWL_EXSTYLE) as u32
         ))
     })
 }
@@ -173,6 +178,7 @@ fn styled(styles: WINDOW_EX_STYLE) -> Kind {
 /// Gives the front back to `previous`, the window the user was in, or leaves it there if it already
 /// has it. Returns it if it has the front now; none if it is gone, hidden or minimised.
 pub fn give_front(previous: Option<HWND>) -> Option<HWND> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         previous
             .filter(|&previous| {
@@ -195,6 +201,7 @@ pub fn valid(window: HWND) -> Option<HWND> {
 /// keeps around it. A window capture is this size.
 pub fn frame(window: HWND) -> Result<RECT> {
     let mut frame = RECT::default();
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         DwmGetWindowAttribute(
             window,
@@ -208,6 +215,7 @@ pub fn frame(window: HWND) -> Result<RECT> {
 
 /// The top-level window `hwnd` belongs to, or `hwnd` itself when it has none.
 pub fn root(hwnd: HWND) -> HWND {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
     if root.is_invalid() { hwnd } else { root }
 }
@@ -215,7 +223,9 @@ pub fn root(hwnd: HWND) -> HWND {
 /// Whether `hwnd` is one of Zilum's own windows, such as an editor, the overlay or the tray menu.
 pub fn is_zilum(hwnd: HWND) -> bool {
     let mut process = 0;
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     process == unsafe { GetCurrentProcessId() }
 }
 
@@ -226,6 +236,7 @@ pub fn is_taskbar(hwnd: HWND) -> bool {
 
 fn class(hwnd: HWND) -> String {
     let mut class = [0u16; 64];
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let length = unsafe { GetClassNameW(hwnd, &mut class) }.max(0) as usize;
     String::from_utf16_lossy(&class[..length])
 }

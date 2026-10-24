@@ -39,6 +39,7 @@ pub fn behind(frame: RECT, margin: i32, screen: HMONITOR) -> Vec<u8> {
         right: frame.right + margin,
         bottom: frame.bottom + margin,
     };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let fallback = |area: RECT| solid(unsafe { COLORREF(GetSysColor(COLOR_DESKTOP)) }, area);
     let Ok(bounds) = bounds(screen) else {
         return fallback(capture);
@@ -96,14 +97,18 @@ enum Position {
 /// picture.
 fn shown(screen: HMONITOR, bounds: RECT, patch: RECT) -> Result<Vec<u8>> {
     let desktop: IDesktopWallpaper =
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe { CoCreateInstance(&DesktopWallpaper, None, CLSCTX_ALL)? };
+    // SAFETY: Shell calls on live interfaces and pointers to live locals.
     let colour = unsafe { desktop.GetBackgroundColor()? };
     let mut pixels = solid(colour, patch);
     let id = screen_id(&desktop, screen, bounds)?;
+    // SAFETY: Shell calls on live interfaces and pointers to live locals.
     let file = string(unsafe { desktop.GetWallpaper(&id)? });
     if file.is_empty() {
         return Ok(pixels);
     }
+    // SAFETY: Shell calls on live interfaces and pointers to live locals.
     let position = match unsafe { desktop.GetPosition()? } {
         DWPOS_CENTER => Position::Centre,
         DWPOS_TILE => Position::Tile,
@@ -222,6 +227,7 @@ struct Picture {
 impl Picture {
     /// The first frame of `file`. A picture with no pixels fails.
     fn open(file: &str) -> Result<Picture> {
+        // SAFETY: Win32 and COM calls on live handles, interfaces and locals.
         unsafe {
             let factory: IWICImagingFactory =
                 CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)?;
@@ -260,6 +266,7 @@ impl Picture {
             self.source.clone()
         } else {
             // Fant comes closest to how the desktop scales its picture.
+            // SAFETY: COM calls on live interfaces and pointers to live locals.
             unsafe {
                 let scaler = self.factory.CreateBitmapScaler()?;
                 scaler.Initialize(&self.source, size.0, size.1, WICBitmapInterpolationModeFant)?;
@@ -268,6 +275,7 @@ impl Picture {
         };
         let (width, height) = (part.right - part.left, part.bottom - part.top);
         let mut pixels = vec![0; width as usize * height as usize * 4];
+        // SAFETY: WIC calls on live interfaces and pointers to live locals.
         unsafe {
             source.CopyPixels(
                 &WICRect {
@@ -288,9 +296,11 @@ impl Picture {
 /// interface path, or failing that the screen with the same rectangle.
 fn screen_id(desktop: &IDesktopWallpaper, screen: HMONITOR, bounds: RECT) -> Result<HSTRING> {
     let path = device_path(screen).unwrap_or_default();
+    // SAFETY: Shell calls on live interfaces and pointers to live locals.
     let count = unsafe { desktop.GetMonitorDevicePathCount()? };
     let mut same_bounds = None;
     for at in 0..count {
+        // SAFETY: Shell calls on live interfaces and pointers to live locals.
         let Ok(id) = (unsafe { desktop.GetMonitorDevicePathAt(at) }) else {
             continue;
         };
@@ -300,6 +310,7 @@ fn screen_id(desktop: &IDesktopWallpaper, screen: HMONITOR, bounds: RECT) -> Res
         }
         // A screen that is not attached has no rectangle.
         let id = HSTRING::from(id);
+        // SAFETY: Shell calls on live interfaces and pointers to live locals.
         if unsafe { desktop.GetMonitorRECT(&id) }.is_ok_and(|rect| rect == bounds) {
             same_bounds.get_or_insert(id);
         }
@@ -320,6 +331,8 @@ fn device_path(screen: HMONITOR) -> Option<String> {
         cb: size_of::<DISPLAY_DEVICEW>() as u32,
         ..Default::default()
     };
+    // SAFETY: MONITORINFOEXW starts with a MONITORINFO, and cbSize says it is the larger one.
+    // szDevice comes back terminated.
     unsafe {
         GetMonitorInfoW(screen, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO)
             .as_bool()
@@ -343,12 +356,14 @@ fn bounds(screen: HMONITOR) -> Result<RECT> {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe { GetMonitorInfoW(screen, &mut info).ok()? };
     Ok(info.rcMonitor)
 }
 
 /// Every screen's bounds together.
 fn virtual_screen() -> RECT {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         let (left, top) = (
             GetSystemMetrics(SM_XVIRTUALSCREEN),
@@ -365,7 +380,9 @@ fn virtual_screen() -> RECT {
 
 /// `text` as a string, freed as the shell asks of the strings it hands out.
 fn string(text: PWSTR) -> String {
+    // SAFETY: `text` is a terminated string the shell returned.
     let string = unsafe { text.to_string() }.unwrap_or_default();
+    // SAFETY: `text` is the shell's allocation, freed only here, after it is copied.
     unsafe { CoTaskMemFree(Some(text.0 as *const _)) };
     string
 }

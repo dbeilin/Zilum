@@ -13,6 +13,7 @@ const NAME: PCWSTR = w!("Zilum");
 /// Makes Zilum start at sign-in from where its exe is now, or stops it starting then. The entry
 /// holds the exe's path, so it is set again at each start while on.
 pub fn set(on: bool) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         if !on {
             let _ = RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN, NAME);

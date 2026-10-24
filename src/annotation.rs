@@ -1417,6 +1417,7 @@ pub struct Pens {
 
 impl Pens {
     pub fn new(context: &ID2D1DeviceContext) -> Result<Pens> {
+        // SAFETY: COM calls on live interfaces and pointers to live locals.
         unsafe {
             let factory: ID2D1Factory = context.GetFactory()?;
             let joined = |cap| {
@@ -1474,6 +1475,7 @@ impl Pens {
     /// left to right however its runs read, a line for each line break.
     fn layout(&self, text: &str, font: f32) -> Result<IDWriteTextLayout> {
         let text: Vec<u16> = text.encode_utf16().collect();
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe {
             self.writer
                 .CreateTextLayout(&text, &self.bold(font)?, f32::MAX, f32::MAX)
@@ -1484,6 +1486,7 @@ impl Pens {
     /// of a box of no size, so its overhang is where its ink is from that corner.
     fn count_layout(&self, count: u32, font: f32) -> Result<IDWriteTextLayout> {
         let text: Vec<u16> = count.to_string().encode_utf16().collect();
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe {
             let format = self.bold(font)?;
             format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
@@ -1493,6 +1496,7 @@ impl Pens {
 
     /// Bold Segoe UI with an em `font` pixels high.
     fn bold(&self, font: f32) -> Result<IDWriteTextFormat> {
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe {
             self.writer.CreateTextFormat(
                 w!("Segoe UI"),
@@ -1509,6 +1513,7 @@ impl Pens {
     /// How `text` lays out with an em `font` pixels high.
     pub fn metrics(&self, text: &str, font: f32) -> Result<DWRITE_TEXT_METRICS> {
         let mut metrics = DWRITE_TEXT_METRICS::default();
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe { self.layout(text, font)?.GetMetrics(&mut metrics)? };
         Ok(metrics)
     }
@@ -1520,9 +1525,11 @@ impl Pens {
         // As many lines as DirectWrite breaks it into, which pasted text can make more than its
         // line breaks.
         let mut whole = DWRITE_TEXT_METRICS::default();
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe { layout.GetMetrics(&mut whole)? };
         let mut metrics = vec![DWRITE_LINE_METRICS::default(); whole.lineCount as usize];
         let mut count = 0;
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe { layout.GetLineMetrics(Some(&mut metrics), &mut count)? };
         metrics.truncate(count as usize);
         let (mut start, mut top) = (0, 0.0);
@@ -1543,6 +1550,7 @@ impl Pens {
         while index < length {
             let (mut x, mut y) = (0.0, 0.0);
             let mut hit = DWRITE_HIT_TEST_METRICS::default();
+            // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
             unsafe { layout.HitTestTextPosition(index as u32, false, &mut x, &mut y, &mut hit)? };
             let (start, length) = (hit.textPosition as usize, hit.length as usize);
             clusters.push(Cluster {
@@ -1624,9 +1632,12 @@ pub fn draw_typed(
 /// Runs `draw` with text drawn in shades of its colour, as the output can only hold, and with no
 /// coloured fringes when zoomed.
 fn in_grey(context: &ID2D1DeviceContext, draw: impl FnOnce() -> Result<()>) -> Result<()> {
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     let antialias = unsafe { context.GetTextAntialiasMode() };
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe { context.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE) };
     let drawn = draw();
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe { context.SetTextAntialiasMode(antialias) };
     drawn
 }
@@ -1660,14 +1671,17 @@ fn draw_each(
                 };
                 match fill {
                     Fill::Solid => {
+                        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
                         unsafe { context.FillRectangle(&rect, pens.brush(style.colour)) };
                         continue;
                     }
                     // Beneath the outline, so the outline keeps its halo and full colour.
+                    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
                     Fill::Tint => unsafe { context.FillRectangle(&rect, pens.tint(style.colour)) },
                     Fill::Outline => {}
                 }
                 // Square corners, so the halo is the same width all round.
+                // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
                 unsafe {
                     context.DrawRectangle(
                         &rect,
@@ -1713,6 +1727,7 @@ fn draw_text(
             X: angle.cos() * halo,
             Y: angle.sin() * halo,
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             context.DrawTextLayout(text.at + off, &layout, pens.brush(colour.halo()), options)
         };
@@ -1726,9 +1741,11 @@ fn draw_text(
                 right: max.X,
                 bottom: max.Y,
             };
+            // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
             unsafe { context.FillRectangle(&rect, lit) };
         }
     }
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe { context.DrawTextLayout(text.at, &layout, pens.brush(colour), options) };
     Ok(())
 }
@@ -1749,6 +1766,7 @@ pub fn draw_outline(
         right: (max.X + OUTLINE_GAP).ceil() + 0.5,
         bottom: (max.Y + OUTLINE_GAP).ceil() + 0.5,
     };
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe { context.DrawRectangle(&outline, edge, 1.0, None) };
 }
 
@@ -1777,6 +1795,7 @@ pub fn draw_handles(
             right: square.right - 0.5,
             bottom: square.bottom - 0.5,
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             context.FillRectangle(&square, fill);
             context.DrawRectangle(&outline, edge, 1.0, None);
@@ -1813,12 +1832,14 @@ fn draw_badge(
     let layout = pens.count_layout(badge.count, Badge::font(style.size, scale))?;
     // Centred on its ink, the digits as drawn, rather than on its line, which leaves room below
     // the baseline that figures never use.
+    // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
     let ink = unsafe { layout.GetOverhangMetrics()? };
     let at = badge.centre
         - Vector2 {
             X: (ink.right - ink.left) / 2.0,
             Y: (ink.bottom - ink.top) / 2.0,
         };
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {
         context.FillRoundedRectangle(&shape(halo), pens.brush(style.colour.halo()));
         context.FillRoundedRectangle(&shape(0.0), pens.brush(style.colour));
@@ -1840,7 +1861,9 @@ fn draw_stroke(
     width: f32,
     halo: f32,
 ) -> Result<()> {
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     let geometry = unsafe { pens.factory.CreatePathGeometry()? };
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {
         let sink = geometry.Open()?;
         sink.BeginFigure(stroke.points[0], D2D1_FIGURE_BEGIN_HOLLOW);
@@ -1873,6 +1896,7 @@ fn draw_arrow(
 
     let heads = heads
         .iter()
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         .map(|head| unsafe {
             let geometry = pens.factory.CreatePathGeometry()?;
             let sink = geometry.Open()?;
@@ -1899,6 +1923,7 @@ fn draw_arrow(
         }
         None => None,
     };
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {
         if let Some((halo_shaft, _)) = &shafts {
             context.DrawGeometry(halo_shaft, edge, stroke + 2.0 * halo, &pens.round);
@@ -1924,6 +1949,7 @@ fn curve_geometry(
     curve: Curve,
     to: Option<Vector2>,
 ) -> Result<ID2D1PathGeometry> {
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {
         let geometry = pens.factory.CreatePathGeometry()?;
         let sink = geometry.Open()?;

@@ -33,6 +33,7 @@ mod theme;
 mod tooltip;
 mod view;
 mod wallpaper;
+mod win32;
 mod window;
 
 use std::{cell::Cell, sync::Arc, time::Duration};
@@ -66,16 +67,15 @@ use windows::{
             },
             WindowsAndMessaging::{
                 AppendMenuW, CallNextHookEx, CreateIconFromResourceEx, CreatePopupMenu,
-                CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow, DispatchMessageW,
-                FindWindowW, GetForegroundWindow, GetMessageW, HICON, KillTimer, LR_DEFAULTCOLOR,
-                MF_SEPARATOR, MF_STRING, MSG, MSGF_MENU, PM_REMOVE, PeekMessageW, PostMessageW,
-                PostQuitMessage, RegisterClassW, SM_CXSMICON, SPI_GETSELECTIONFADE,
-                SPI_GETUIEFFECTS, SYSTEM_METRICS_INDEX, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-                SetForegroundWindow, SetTimer, SetWindowsHookExW, SystemParametersInfoW,
-                TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage,
-                UnhookWindowsHookEx, WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP, WM_CONTEXTMENU,
-                WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION, WM_QUIT,
-                WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+                CreateWindowExW, DestroyMenu, DispatchMessageW, FindWindowW, GetForegroundWindow,
+                GetMessageW, HICON, LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, MSGF_MENU,
+                PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SM_CXSMICON,
+                SPI_GETSELECTIONFADE, SPI_GETUIEFFECTS, SYSTEM_METRICS_INDEX,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetForegroundWindow, SetWindowsHookExW,
+                SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+                TranslateMessage, UnhookWindowsHookEx, WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP,
+                WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION,
+                WM_QUIT, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
             },
         },
     },
@@ -126,6 +126,7 @@ pub enum Purpose {
 }
 
 fn main() -> Result<()> {
+    // SAFETY: Win32 and Direct3D calls on live handles, interfaces and locals.
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
 
@@ -198,7 +199,7 @@ fn main() -> Result<()> {
                 continue;
             };
             if !claim(hwnd, mode, hotkey)
-                && SetTimer(Some(hwnd), hotkey_id(mode), HOTKEY_RETRY_MS, None) == 0
+                && !win32::set_timer(hwnd, hotkey_id(mode), HOTKEY_RETRY_MS)
             {
                 notify(hwnd, &in_use(hotkey));
             }
@@ -231,10 +232,11 @@ fn main() -> Result<()> {
 }
 
 /// The running copy may still be creating its window, so look for it for about a second.
-unsafe fn tell_running_copy() {
+fn tell_running_copy() {
     for _ in 0..20 {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         if let Ok(hwnd) = unsafe { FindWindowW(w!("Zilum.Tray"), None) } {
-            let _ = unsafe { PostMessageW(Some(hwnd), WM_ALREADY_RUNNING, WPARAM(0), LPARAM(0)) };
+            win32::post(hwnd, WM_ALREADY_RUNNING, WPARAM(0), LPARAM(0));
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -267,7 +269,7 @@ unsafe extern "system" fn window_proc(
                     // Taken now, at the click, because showing the menu brings the tray window
                     // to the front.
                     let previous = window::before_taskbar();
-                    unsafe { show_menu(hwnd, x, y, previous) };
+                    show_menu(hwnd, x, y, previous);
                 }
                 _ => {}
             }
@@ -276,6 +278,7 @@ unsafe extern "system" fn window_proc(
         WM_HOTKEY => {
             // The window the user was in, which gets the keyboard back when the capture is
             // cancelled, or when its editor leaves untouched.
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let previous = window::valid(unsafe { GetForegroundWindow() });
             if let Some(mode) = mode_of(wparam.0) {
                 cancel_waiting(hwnd);
@@ -284,7 +287,7 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == MENU_FADE_TIMER => {
-            let _ = unsafe { KillTimer(Some(hwnd), MENU_FADE_TIMER) };
+            win32::kill_timer(hwnd, MENU_FADE_TIMER);
             if let Some((chosen, previous)) = WAITING.take() {
                 start(hwnd, chosen, previous);
             }
@@ -292,11 +295,11 @@ unsafe extern "system" fn window_proc(
         }
         WM_TIMER => {
             if let Some(mode) = mode_of(wparam.0) {
-                let _ = unsafe { KillTimer(Some(hwnd), wparam.0) };
+                win32::kill_timer(hwnd, wparam.0);
                 if let Some(hotkey) = settings::current().hotkeys[mode as usize]
-                    && !unsafe { claim(hwnd, mode, hotkey) }
+                    && !claim(hwnd, mode, hotkey)
                 {
-                    unsafe { notify(hwnd, &in_use(hotkey)) };
+                    notify(hwnd, &in_use(hotkey));
                 }
             }
             LRESULT(0)
@@ -306,23 +309,25 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_ALREADY_RUNNING => {
-            unsafe { notify(hwnd, "Zilum is already running") };
+            notify(hwnd, "Zilum is already running");
             LRESULT(0)
         }
         WM_QUERYENDSESSION => LRESULT(1),
         WM_ENDSESSION => {
             if wparam.0 != 0 {
-                let _ = unsafe { DestroyWindow(hwnd) };
+                win32::destroy(hwnd);
             }
             LRESULT(0)
         }
         WM_DESTROY => {
             let nid = tray_data(hwnd);
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
-        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => win32::default_proc(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -339,8 +344,9 @@ fn mode_of(id: usize) -> Option<Mode> {
 /// True when `hotkey` will reach Zilum as `mode`'s. PrintScreen stays registered even when
 /// Snipping Tool takes it, so it starts working if the user later turns Snipping Tool's setting
 /// off.
-unsafe fn claim(hwnd: HWND, mode: Mode, hotkey: Hotkey) -> bool {
+fn claim(hwnd: HWND, mode: Mode, hotkey: Hotkey) -> bool {
     let id = hotkey_id(mode) as i32;
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         // Re-registering our own hotkey would fail, so the retry starts clean.
         let _ = UnregisterHotKey(Some(hwnd), id);
@@ -365,6 +371,7 @@ pub fn rebind(
         .filter(|mode| from[*mode as usize] != to[*mode as usize])
         .collect();
     let mut refused = [None; 4];
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         // All released first, so two modes can swap hotkeys.
         for mode in &changing {
@@ -423,6 +430,7 @@ pub fn rebind(
 fn snipping_tool_owns_printscreen() -> bool {
     let mut value = 0u32;
     let mut size = size_of::<u32>() as u32;
+    // SAFETY: `value` is a u32, the size `size` gives.
     let status = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,
@@ -456,7 +464,7 @@ fn start(tray: HWND, mode: Mode, previous: Option<HWND>) {
 /// does not hold it. The pointer is then still about where the item was clicked, so the capture
 /// is of that screen.
 fn after_fade(tray: HWND, chosen: Mode, previous: Option<HWND>) {
-    if menu_fades() && unsafe { SetTimer(Some(tray), MENU_FADE_TIMER, MENU_FADE_MS, None) } != 0 {
+    if menu_fades() && win32::set_timer(tray, MENU_FADE_TIMER, MENU_FADE_MS) {
         WAITING.set(Some((chosen, previous)));
     } else {
         start(tray, chosen, previous);
@@ -467,7 +475,7 @@ fn after_fade(tray: HWND, chosen: Mode, previous: Option<HWND>) {
 /// fade, because the user has asked for something else since.
 fn cancel_waiting(tray: HWND) {
     if WAITING.take().is_some() {
-        let _ = unsafe { KillTimer(Some(tray), MENU_FADE_TIMER) };
+        win32::kill_timer(tray, MENU_FADE_TIMER);
     }
 }
 
@@ -475,7 +483,7 @@ fn cancel_waiting(tray: HWND) {
 /// the keyboard back when the capture is cancelled, or when its editor leaves untouched.
 fn open_overlay(hwnd: HWND, previous: Option<HWND>, purpose: Purpose) {
     if overlay::open(hwnd, previous, purpose).is_err() {
-        unsafe { notify(hwnd, "Capture failed") };
+        notify(hwnd, "Capture failed");
     }
 }
 
@@ -488,6 +496,7 @@ fn capture_screen(hwnd: HWND, previous: Option<HWND>) {
     let grabbed = capture::current_screen().and_then(|(monitor, screen)| {
         // Zilum's editors are excluded from capture, so what is behind them is in the frame.
         let frame = capture::grab(monitor)?;
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         Ok((monitor, screen, frame, unsafe { GetLocalTime() }))
     });
     match grabbed {
@@ -510,7 +519,7 @@ fn capture_screen(hwnd: HWND, previous: Option<HWND>) {
                 Purpose::Capture,
             );
         }
-        Err(_) => unsafe { notify(hwnd, "Capture failed") },
+        Err(_) => notify(hwnd, "Capture failed"),
     }
 }
 
@@ -523,14 +532,14 @@ fn capture_window(tray: HWND, window: Option<HWND>, previous: Option<HWND>) {
         return;
     }
     let Some(window) = window else {
-        unsafe { notify(tray, "No window to capture") };
+        notify(tray, "No window to capture");
         return;
     };
     // The item first: from then on it is this window, whatever happens to the handle.
     let item = capture::window_item(window);
     match capture::current_screen() {
         Ok((screen, _)) => deliver_window(tray, item, window, screen, previous, Purpose::Capture),
-        Err(_) => unsafe { notify(tray, "Capture failed") },
+        Err(_) => notify(tray, "Capture failed"),
     }
 }
 
@@ -547,8 +556,10 @@ pub fn deliver_window(
     let grabbed = item.and_then(|item| {
         let bounds = window::frame(window)?;
         // The frame's colours are relative to the white of the screen the window is mostly on.
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let shown_on = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
         let frame = capture::grab_item(&item)?;
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         Ok((bounds, shown_on, frame, unsafe { GetLocalTime() }))
     });
     match grabbed {
@@ -572,7 +583,7 @@ pub fn deliver_window(
                 purpose,
             );
         }
-        Err(_) => unsafe { notify(tray, "Capture failed") },
+        Err(_) => notify(tray, "Capture failed"),
     }
 }
 
@@ -621,25 +632,28 @@ pub fn deliver(
                 copy_text::start(image, screen, tray);
             }
         },
-        None => unsafe { notify(tray, "Capture failed") },
+        None => notify(tray, "Capture failed"),
     }
 }
 
 /// Drops hotkey messages while the tray menu is modal, so no overlay opens under it.
 unsafe extern "system" fn menu_filter(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // SAFETY: For a WH_MSGFILTER hook, lparam points to the MSG being filtered.
     if code == MSGF_MENU as i32 && unsafe { (*(lparam.0 as *const MSG)).message } == WM_HOTKEY {
         return LRESULT(1);
     }
+    // SAFETY: Passes the hook's own arguments on unchanged.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
 /// Shows the tray menu at `x`, `y`. `previous` is the window that was in front before the tray icon
 /// was clicked, which Capture window captures if it is capturable, and which every capture hands
 /// the keyboard back to.
-unsafe fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
+fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
     let previous = window::valid(previous);
     // Its timer would fire under this menu, and the capture would hold the menu.
     cancel_waiting(hwnd);
+    // SAFETY: `menu_filter` is a HOOKPROC on this thread; the rest take handles and integers.
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE, w!("Capture"));
@@ -666,7 +680,7 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
         if let Ok(hook) = hook {
             let _ = UnhookWindowsHookEx(hook);
         }
-        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        win32::post(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
         match chosen.0 as usize {
             ID_CAPTURE => after_fade(hwnd, Mode::Capture, previous),
@@ -676,7 +690,7 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
             ID_OPEN_SAVE_FOLDER => save::open_folder(),
             ID_SETTINGS => settings_window::open(hwnd),
             ID_QUIT => {
-                let _ = DestroyWindow(hwnd);
+                win32::destroy(hwnd);
             }
             _ => {}
         }
@@ -687,6 +701,7 @@ unsafe fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
 fn menu_fades() -> bool {
     let setting = |action| {
         let mut on = BOOL(1);
+        // SAFETY: Each action asked for here writes one BOOL, to `on`.
         let _ = unsafe {
             SystemParametersInfoW(
                 action,
@@ -716,12 +731,13 @@ fn copy_wide<const N: usize>(text: &str, into: &mut [u16; N]) {
     }
 }
 
-unsafe fn add_tray_icon(hwnd: HWND) -> Result<()> {
+fn add_tray_icon(hwnd: HWND) -> Result<()> {
     let mut nid = tray_data(hwnd);
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     nid.uCallbackMessage = WM_TRAY;
-    nid.hIcon = unsafe { load_icon(SM_CXSMICON)? };
+    nid.hIcon = load_icon(SM_CXSMICON)?;
     copy_wide("Zilum", &mut nid.szTip);
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         Shell_NotifyIconW(NIM_ADD, &nid).ok()?;
         nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
@@ -731,17 +747,19 @@ unsafe fn add_tray_icon(hwnd: HWND) -> Result<()> {
 }
 
 /// The Zilum icon at the size the system metric `metric` gives.
-unsafe fn load_icon(metric: SYSTEM_METRICS_INDEX) -> Result<HICON> {
+fn load_icon(metric: SYSTEM_METRICS_INDEX) -> Result<HICON> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         let size = GetSystemMetricsForDpi(metric, GetDpiForSystem());
         CreateIconFromResourceEx(ICON_PNG, true, 0x0003_0000, size, size, LR_DEFAULTCOLOR)
     }
 }
 
-unsafe fn notify(hwnd: HWND, text: &str) {
+fn notify(hwnd: HWND, text: &str) {
     let mut nid = tray_data(hwnd);
     nid.uFlags = NIF_INFO;
     copy_wide("Zilum", &mut nid.szInfoTitle);
     copy_wide(text, &mut nid.szInfo);
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
 }

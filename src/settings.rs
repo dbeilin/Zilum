@@ -141,6 +141,7 @@ fn default_folder() -> PathBuf {
 
 /// Where the known folder `id` is for this user.
 fn known_folder(id: &GUID) -> Option<PathBuf> {
+    // SAFETY: The shell's string is copied, then freed once.
     unsafe {
         let path = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
         let folder = path.to_hstring().to_os_string();

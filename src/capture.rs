@@ -51,6 +51,7 @@ pub fn request_borderless_access() {
 /// The screen under the pointer now, and its rectangle in physical pixels. A capture asks once,
 /// when it starts, and that screen stays the one it captures.
 pub fn current_screen() -> Result<(HMONITOR, RECT)> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         let mut pointer = POINT::default();
         GetCursorPos(&mut pointer)?;
@@ -74,9 +75,11 @@ pub fn screens(first: HMONITOR) -> Result<Vec<(HMONITOR, RECT)>> {
         rect: *mut RECT,
         list: LPARAM,
     ) -> BOOL {
+        // SAFETY: `list` is `screens` below, used by nothing else during EnumDisplayMonitors.
         unsafe { (*(list.0 as *mut Vec<(HMONITOR, RECT)>)).push((monitor, *rect)) };
         true.into()
     }
+    // SAFETY: `add` is a MONITORENUMPROC, and `screens` outlives the enumeration it is passed to.
     unsafe {
         EnumDisplayMonitors(
             None,
@@ -113,6 +116,7 @@ pub fn grab_screens(monitors: &[HMONITOR]) -> Result<Vec<ID3D11Texture2D>> {
 }
 
 fn screen_item(monitor: HMONITOR) -> Result<GraphicsCaptureItem> {
+    // SAFETY: An interop call on a live activation factory, with a handle Windows validates.
     unsafe {
         factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?.CreateForMonitor(monitor)
     }
@@ -121,6 +125,7 @@ fn screen_item(monitor: HMONITOR) -> Result<GraphicsCaptureItem> {
 /// The capture item for `window`, which from then on stays that window whatever its handle
 /// comes to mean. Fails if the window is gone.
 pub fn window_item(window: HWND) -> Result<GraphicsCaptureItem> {
+    // SAFETY: An interop call on a live activation factory, with a handle Windows validates.
     unsafe {
         factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?.CreateForWindow(window)
     }
@@ -183,6 +188,7 @@ impl Drop for Grab {
 
 /// Waits for the first frame and copies it into a texture of its own.
 fn first_frame(graphics: &Graphics, pool: &Direct3D11CaptureFramePool) -> Result<ID3D11Texture2D> {
+    // SAFETY: Direct3D calls on live interfaces and pointers to live locals.
     unsafe {
         let deadline = Instant::now() + FRAME_TIMEOUT;
         let frame = loop {

@@ -15,12 +15,12 @@ use windows::{
         Foundation::{HWND, LPARAM, WPARAM},
         Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME},
         Graphics::Gdi::HMONITOR,
-        UI::WindowsAndMessaging::{PostMessageW, WM_APP},
+        UI::WindowsAndMessaging::WM_APP,
     },
     core::{HSTRING, PWSTR, Result},
 };
 
-use crate::{clipboard, graphics, image::Image, notice};
+use crate::{clipboard, graphics, image::Image, notice, win32};
 
 /// Told to the tray window: the text read is on the clipboard, if its wparam is not 0; and nothing
 /// was read. Clear of the tray's own messages.
@@ -53,7 +53,7 @@ pub fn start(image: Image, screen: HMONITOR, tray: HWND) {
         match text {
             Some(text) => clipboard::copy_text(text, tray, tray, WM_TEXT_COPIED),
             None => {
-                let _ = unsafe { PostMessageW(Some(tray), WM_NO_TEXT, WPARAM(0), LPARAM(0)) };
+                win32::post(tray, WM_NO_TEXT, WPARAM(0), LPARAM(0));
             }
         }
     });
@@ -140,6 +140,7 @@ fn on_white(pixels: &mut [u8]) {
 /// if Windows does not say.
 fn display_language() -> String {
     let (mut count, mut length) = (0, 0);
+    // SAFETY: The second call's buffer is the length the first call asked for.
     unsafe {
         if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, None, &mut length).is_err() {
             return String::new();

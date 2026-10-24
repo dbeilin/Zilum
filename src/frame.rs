@@ -25,6 +25,7 @@ use windows::{
 /// window's top edge, where Zilum draws its own title row or bar.
 pub fn borders(style: WINDOW_STYLE, dpi: u32) -> Result<RECT> {
     let mut borders = RECT::default();
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe { AdjustWindowRectExForDpi(&mut borders, style, false, WINDOW_EX_STYLE(0), dpi)? };
     Ok(RECT { top: 0, ..borders })
 }
@@ -33,10 +34,13 @@ pub fn borders(style: WINDOW_STYLE, dpi: u32) -> Result<RECT> {
 /// keeps the borders beside and below the client area, and draws nothing above it.
 pub fn calc_size(hwnd: HWND, style: WINDOW_STYLE, wparam: WPARAM, lparam: LPARAM) {
     let proposed = if wparam.0 != 0 {
+        // SAFETY: With wparam set, lparam points to the message's NCCALCSIZE_PARAMS.
         unsafe { &mut (*(lparam.0 as *mut NCCALCSIZE_PARAMS)).rgrc[0] }
     } else {
+        // SAFETY: With wparam clear, lparam points to the message's RECT.
         unsafe { &mut *(lparam.0 as *mut RECT) }
     };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     if let Ok(borders) = borders(style, unsafe { GetDpiForWindow(hwnd) }) {
         proposed.left -= borders.left;
         proposed.right -= borders.right;
@@ -55,6 +59,7 @@ pub fn square(hwnd: HWND) {
 }
 
 fn corners(hwnd: HWND, corners: DWM_WINDOW_CORNER_PREFERENCE) {
+    // SAFETY: The attribute is `corners`, a live local of the size passed.
     let _ = unsafe {
         DwmSetWindowAttribute(
             hwnd,
@@ -69,6 +74,7 @@ fn corners(hwnd: HWND, corners: DWM_WINDOW_CORNER_PREFERENCE) {
 /// is.
 pub fn border(hwnd: HWND, dark: bool) {
     let dark = BOOL::from(dark);
+    // SAFETY: The attribute is `dark`, a live BOOL of the size passed.
     let _ = unsafe {
         DwmSetWindowAttribute(
             hwnd,

@@ -20,15 +20,12 @@ use windows::{
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
             Ole::{CF_DIBV5, CF_UNICODETEXT},
         },
-        UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, HWND_MESSAGE, PostMessageW, WINDOW_EX_STYLE,
-            WINDOW_STYLE,
-        },
+        UI::WindowsAndMessaging::{CreateWindowExW, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE},
     },
     core::{Error, Result, w},
 };
 
-use crate::{editor, graphics, image::Image};
+use crate::{editor, graphics, image::Image, win32};
 
 const OPEN_ATTEMPTS: u32 = 8;
 const OPEN_RETRY: Duration = Duration::from_millis(10);
@@ -75,7 +72,7 @@ fn send(content: Content, tray: HWND, report_to: Option<HWND>, message: u32) {
                 }
                 .is_ok();
                 if !copied {
-                    unsafe { crate::notify(HWND(job.tray as _), "Couldn't copy to clipboard") };
+                    crate::notify(HWND(job.tray as _), "Couldn't copy to clipboard");
                 }
                 report(HWND(job.report_to as _), job.message, copied);
             }
@@ -89,14 +86,14 @@ fn send(content: Content, tray: HWND, report_to: Option<HWND>, message: u32) {
         message,
     };
     if let Err(job) = worker.send(job) {
-        unsafe { crate::notify(tray, "Couldn't copy to clipboard") };
+        crate::notify(tray, "Couldn't copy to clipboard");
         report(HWND(job.0.report_to as _), job.0.message, false);
     }
 }
 
 fn report(to: HWND, message: u32, copied: bool) {
     if !to.is_invalid() {
-        let _ = unsafe { PostMessageW(Some(to), message, WPARAM(copied as usize), LPARAM(0)) };
+        win32::post(to, message, WPARAM(copied as usize), LPARAM(0));
     }
 }
 
@@ -119,6 +116,7 @@ fn write_text(text: &str) -> Result<()> {
 
 /// Empties the clipboard and hands it each of `formats`, as its bytes.
 fn hand_over(formats: &[(u32, &[u8])]) -> Result<()> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         // A window of our own owns the clipboard: without one, setting data fails. It lives only
         // for this write, since an owner that never pumps messages would stall the next app
@@ -147,7 +145,7 @@ fn hand_over(formats: &[(u32, &[u8])]) -> Result<()> {
             let _ = CloseClipboard();
             put
         });
-        let _ = DestroyWindow(owner);
+        win32::destroy(owner);
         written
     }
 }
@@ -157,6 +155,7 @@ fn hand_over(formats: &[(u32, &[u8])]) -> Result<()> {
 fn open(owner: HWND) -> Result<()> {
     let mut attempt = 1;
     loop {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         match unsafe { OpenClipboard(Some(owner)) } {
             Ok(()) => return Ok(()),
             Err(error) if attempt == OPEN_ATTEMPTS => return Err(error),
@@ -168,6 +167,7 @@ fn open(owner: HWND) -> Result<()> {
 }
 
 fn png_format() -> Result<u32> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     match unsafe { RegisterClipboardFormatW(w!("PNG")) } {
         0 => Err(Error::from_thread()),
         format => Ok(format),
@@ -175,7 +175,8 @@ fn png_format() -> Result<u32> {
 }
 
 /// Hands `bytes` to the open clipboard as `format`.
-unsafe fn put(format: u32, bytes: &[u8]) -> Result<()> {
+fn put(format: u32, bytes: &[u8]) -> Result<()> {
+    // SAFETY: GlobalLock returned a non-null block of `bytes.len()` bytes, ours until unlocked.
     unsafe {
         let memory = GlobalAlloc(GMEM_MOVEABLE, bytes.len())?;
         let target = GlobalLock(memory);

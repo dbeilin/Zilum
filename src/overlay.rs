@@ -32,18 +32,18 @@ use windows::{
                 Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_R16G16B16A16_FLOAT},
                 IDXGISurface,
             },
-            Gdi::{ClientToScreen, HMONITOR, UpdateWindow},
+            Gdi::{HMONITOR, UpdateWindow},
         },
         System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime},
         UI::{
             HiDpi::GetDpiForWindow,
-            Input::KeyboardAndMouse::{SetCapture, SetFocus, VK_ESCAPE},
+            Input::KeyboardAndMouse::{SetFocus, VK_ESCAPE},
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GetCursorPos, IDC_CROSS,
-                LoadCursorW, MA_NOACTIVATE, RegisterClassW, SW_SHOWNOACTIVATE, SetForegroundWindow,
-                ShowWindow, WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND,
-                WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
-                WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP,
+                CreateWindowExW, GetCursorPos, IDC_CROSS, LoadCursorW, MA_NOACTIVATE,
+                RegisterClassW, SW_SHOWNOACTIVATE, SetForegroundWindow, ShowWindow,
+                WM_CAPTURECHANGED, WM_DESTROY, WM_DISPLAYCHANGE, WM_ERASEBKGND, WM_KEYDOWN,
+                WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
+                WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WS_EX_NOREDIRECTIONBITMAP,
                 WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
             },
         },
@@ -57,6 +57,7 @@ use crate::{
     graphics::{self, Graphics},
     selection::{self, Point, Selection, local},
     slide::{self, Area, Highlight, Slide},
+    win32,
     window::{self, Kind, Shown},
 };
 
@@ -168,6 +169,7 @@ impl Lit {
 }
 
 pub fn register(instance: HINSTANCE) -> Result<()> {
+    // SAFETY: `window_proc` is a WNDPROC, and the class names and cursors are static.
     unsafe {
         let class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
@@ -197,6 +199,7 @@ pub fn open(tray: HWND, previous: Option<HWND>, purpose: Purpose) -> Result<()> 
     if is_open() {
         return Ok(());
     }
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         let (current, _) = capture::current_screen()?;
         let screens = capture::screens(current)?;
@@ -284,11 +287,13 @@ impl Frozen {
         pointer: Point,
     ) -> Result<Frozen> {
         let graphics = graphics::get()?;
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let instance = unsafe { GetModuleHandleW(None)? };
         let now = Instant::now();
         let mut made = Vec::with_capacity(screens.len());
         for ((monitor, rect), frame) in screens.into_iter().zip(frames) {
             // No redirection bitmap: the composition surface is all the window shows.
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let hwnd = unsafe {
                 CreateWindowExW(
                     WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOREDIRECTIONBITMAP,
@@ -408,6 +413,7 @@ impl Frozen {
     /// if the pointer is on it the guides through the pointer and the size of what is lit.
     fn present(&self, index: usize, now: Instant) -> Result<()> {
         let screen = &self.screens[index];
+        // SAFETY: COM calls on live interfaces and pointers to live locals.
         unsafe {
             let mut offset = POINT::default();
             let context: ID2D1DeviceContext = screen.surface.BeginDraw(None, &mut offset)?;
@@ -453,6 +459,7 @@ impl Screen {
         frame: ID3D11Texture2D,
         now: Instant,
     ) -> Result<Screen> {
+        // SAFETY: Win32 and COM calls on live handles, interfaces and locals.
         unsafe {
             // Not a swap chain: one covering the screen is scanned out directly, and on a
             // variable refresh screen each present then sets the refresh rate. A slow drag makes
@@ -522,6 +529,7 @@ impl Screen {
             right: left + 1.0,
             bottom: height,
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             // The edges first, so the light lines cross over them.
             for edge in [
@@ -549,6 +557,7 @@ impl Screen {
             area.right.round(),
             area.bottom.round(),
         );
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             if highlight.light < 1.0 {
                 self.ink.fade.SetOpacity(1.0 - highlight.light);
@@ -584,6 +593,7 @@ impl Screen {
     /// Puts the size label by `pointer`.
     fn label(&self, context: &ID2D1DeviceContext, pointer: Point, lit: &Lit) -> Result<()> {
         let ink = &self.ink;
+        // SAFETY: COM calls on live interfaces and pointers to live locals.
         unsafe {
             let text: Vec<u16> = format!("{} × {}", lit.width, lit.height)
                 .encode_utf16()
@@ -636,9 +646,11 @@ impl Screen {
 
 impl Ink {
     fn new(context: &ID2D1DeviceContext, scale: f32) -> Result<Ink> {
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         let brush = |r, g, b, a| unsafe {
             context.CreateSolidColorBrush(&D2D1_COLOR_F { r, g, b, a }, None)
         };
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
         unsafe {
             let writer: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
             let font = writer.CreateTextFormat(
@@ -775,6 +787,7 @@ pub fn slide_frame() {
 
 /// Waits for DWM's next frame. Bounded, so a stalled compositor cannot hang the overlay.
 fn wait_for_compositor() {
+    // SAFETY: DirectComposition calls on live interfaces and pointers to live locals.
     unsafe { DCompositionWaitForCompositorClock(None, 100) };
 }
 
@@ -870,11 +883,13 @@ fn capture(release: Release) {
 /// The pointer in a mouse message to `hwnd`, in physical pixels of the desktop. With the mouse
 /// captured, a pointer off `hwnd`, on another screen, comes to it too.
 fn pointer(hwnd: HWND, lparam: LPARAM) -> Point {
-    let mut point = POINT {
-        x: (lparam.0 & 0xFFFF) as i16 as i32,
-        y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
-    };
-    let _ = unsafe { ClientToScreen(hwnd, &mut point) };
+    let point = win32::to_screen(
+        hwnd,
+        POINT {
+            x: (lparam.0 & 0xFFFF) as i16 as i32,
+            y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+        },
+    );
     Point {
         x: point.x,
         y: point.y,
@@ -900,7 +915,7 @@ fn close() {
     // Destroying a focused window sends it WM_KILLFOCUS, which closes again: the list is empty by
     // then.
     for hwnd in OPEN.take().into_iter().rev() {
-        let _ = unsafe { DestroyWindow(hwnd) };
+        win32::destroy(hwnd);
     }
 }
 
@@ -918,7 +933,7 @@ unsafe extern "system" fn window_proc(
         WM_LBUTTONDOWN => {
             // A drag that leaves the screen must still deliver the release here. Losing the
             // capture later cancels, below.
-            unsafe { SetCapture(hwnd) };
+            win32::capture(hwnd);
             if begin_drag(pointer(hwnd, lparam)).is_err() {
                 close();
             }
@@ -964,7 +979,7 @@ unsafe extern "system" fn window_proc(
                 close();
             }
         }
-        _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => return win32::default_proc(hwnd, msg, wparam, lparam),
     }
     LRESULT(0)
 }

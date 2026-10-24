@@ -68,6 +68,7 @@ impl Graphics {
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
             ..Default::default()
         };
+        // SAFETY: Direct3D calls on live interfaces and pointers to live locals.
         unsafe {
             self.dxgi_factory
                 .CreateSwapChainForHwnd(&self.d3d, hwnd, &desc, None, None)
@@ -82,6 +83,7 @@ thread_local! {
 /// Initialises the Windows Runtime on this thread. Every thread that captures needs it, and a
 /// thread something else already initialised in another mode counts as done.
 pub fn init_apartment() {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
 }
 
@@ -98,6 +100,7 @@ pub fn get() -> Result<Graphics> {
 }
 
 fn create() -> Result<Graphics> {
+    // SAFETY: Win32 and COM calls on live handles, interfaces and locals.
     unsafe {
         let mut d3d = None;
         D3D11CreateDevice(

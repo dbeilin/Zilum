@@ -86,6 +86,7 @@ impl Image {
             bV5Intent: LCS_GM_IMAGES,
             ..Default::default()
         };
+        // SAFETY: `header` is a live, plain-data BITMAPV5HEADER, read as exactly its own bytes.
         let header = unsafe {
             std::slice::from_raw_parts(
                 &header as *const BITMAPV5HEADER as *const u8,
@@ -323,7 +324,9 @@ mod tests {
     /// Red, green, blue, alpha of each pixel, top-down, the way an app pasting a bitmap reads
     /// it: through the header's masks, rows flipped when the height is positive.
     fn decode_dib(dib: &[u8]) -> (u32, u32, Vec<[u8; 4]>) {
+        assert!(dib.len() >= size_of::<BITMAPV5HEADER>());
         let header: BITMAPV5HEADER =
+            // SAFETY: `dib` holds at least a header's bytes, read unaligned as plain data.
             unsafe { std::ptr::read_unaligned(dib.as_ptr() as *const BITMAPV5HEADER) };
         assert_eq!(header.bV5Size as usize, size_of::<BITMAPV5HEADER>());
         assert_eq!(header.bV5BitCount, 32);

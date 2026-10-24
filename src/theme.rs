@@ -191,6 +191,7 @@ pub fn changed(msg: u32, lparam: LPARAM) -> bool {
     match msg {
         WM_DWMCOLORIZATIONCOLORCHANGED => true,
         WM_SETTINGCHANGE if lparam.0 != 0 => {
+            // SAFETY: A nonzero lparam of WM_SETTINGCHANGE points to a terminated string.
             let area = unsafe { PCWSTR(lparam.0 as *const u16).to_string() };
             area.is_ok_and(|area| area == "ImmersiveColorSet")
         }
@@ -202,6 +203,7 @@ pub fn changed(msg: u32, lparam: LPARAM) -> bool {
 fn apps_use_light_theme() -> bool {
     let mut value = 1u32;
     let mut size = size_of::<u32>() as u32;
+    // SAFETY: `value` is a u32, the size `size` gives.
     let status = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,
@@ -220,6 +222,7 @@ fn apps_use_light_theme() -> bool {
 fn accent_palette() -> Option<Vec<u8>> {
     let mut bytes = vec![0u8; 32];
     let mut size = bytes.len() as u32;
+    // SAFETY: `bytes` is the `size` bytes long that RegGetValueW is told.
     let status = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,

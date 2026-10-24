@@ -35,9 +35,9 @@ use windows::{
                 IDXGISwapChain1,
             },
             Gdi::{
-                ClientToScreen, GetMonitorInfoW, HDC, InvalidateRect, MONITOR_DEFAULTTONEAREST,
+                GetMonitorInfoW, HDC, InvalidateRect, MONITOR_DEFAULTTONEAREST,
                 MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromWindow,
-                ScreenToClient, ValidateRect,
+                ValidateRect,
             },
         },
         System::{
@@ -49,30 +49,28 @@ use windows::{
             Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{
-                GetCapture, GetFocus, GetKeyState, IsWindowEnabled, ReleaseCapture, SetCapture,
-                SetFocus, TME_LEAVE, TME_NONCLIENT, TRACKMOUSEEVENT, TRACKMOUSEEVENT_FLAGS,
-                TrackMouseEvent, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_ESCAPE, VK_F4,
-                VK_LEFT, VK_LWIN, VK_MENU, VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD8, VK_RETURN, VK_RIGHT,
-                VK_RWIN, VK_SHIFT, VK_UP,
+                GetCapture, GetFocus, IsWindowEnabled, SetFocus, TME_LEAVE, TME_NONCLIENT,
+                TRACKMOUSEEVENT, TRACKMOUSEEVENT_FLAGS, TrackMouseEvent, VK_BACK, VK_CONTROL,
+                VK_DELETE, VK_DOWN, VK_ESCAPE, VK_F4, VK_LEFT, VK_LWIN, VK_MENU, VK_NUMPAD0,
+                VK_NUMPAD1, VK_NUMPAD8, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_UP,
             },
             Shell::{ITaskbarList, TaskbarList},
             WindowsAndMessaging::{
-                CS_DBLCLKS, CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow,
-                EN_CHANGE, EVENT_SYSTEM_FOREGROUND, GW_HWNDNEXT, GWL_EXSTYLE, GWL_STYLE,
-                GetCaretBlinkTime, GetClientRect, GetCursorPos, GetForegroundWindow, GetTopWindow,
-                GetWindow, GetWindowLongPtrW, GetWindowRect, HC_ACTION, HHOOK, HTCAPTION,
-                HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, KillTimer, LWA_ALPHA, LoadCursorW,
-                MINMAXINFO, MSLLHOOKSTRUCT, PostMessageW, RegisterClassExW, SM_CXICON, SM_CXSMICON,
+                CS_DBLCLKS, CallNextHookEx, CreateWindowExW, EN_CHANGE, EVENT_SYSTEM_FOREGROUND,
+                GW_HWNDNEXT, GWL_EXSTYLE, GWL_STYLE, GetCaretBlinkTime, GetClientRect,
+                GetCursorPos, GetForegroundWindow, GetTopWindow, GetWindow, GetWindowRect,
+                HC_ACTION, HHOOK, HTCAPTION, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA,
+                LoadCursorW, MINMAXINFO, MSLLHOOKSTRUCT, RegisterClassExW, SM_CXICON, SM_CXSMICON,
                 SPI_GETCLIENTAREAANIMATION, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
                 SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-                SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
-                SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW,
-                ShowWindow, SystemParametersInfoW, UnhookWindowsHookEx, WDA_EXCLUDEFROMCAPTURE,
-                WH_MOUSE_LL, WHEEL_DELTA, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_APP,
-                WM_CAPTURECHANGED, WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED,
-                WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-                WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
+                SetForegroundWindow, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
+                SetWindowLongPtrW, SetWindowPos, SetWindowsHookExW, ShowWindow,
+                SystemParametersInfoW, UnhookWindowsHookEx, WDA_EXCLUDEFROMCAPTURE, WH_MOUSE_LL,
+                WHEEL_DELTA, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WM_APP, WM_CAPTURECHANGED,
+                WM_COMMAND, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND,
+                WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+                WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCACTIVATE,
+                WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
                 WM_NCMBUTTONDOWN, WM_NCMOUSEMOVE, WM_NCRBUTTONDOWN, WM_NCXBUTTONDOWN, WM_PAINT,
                 WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SIZE, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
                 WNDCLASSEXW, WS_CLIPCHILDREN, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -104,7 +102,7 @@ use crate::{
     theme::{self, Palette},
     tooltip::Tooltip,
     view::{View, Zoom},
-    window,
+    win32, window,
 };
 
 /// Posted to an editor when a copy it asked for has finished. `wparam` is 1 if the capture is
@@ -539,6 +537,7 @@ struct Ink {
 }
 
 pub fn register(instance: HINSTANCE) -> Result<()> {
+    // SAFETY: `window_proc` is a WNDPROC, and the class names and cursors are static.
     unsafe {
         let class = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -639,6 +638,7 @@ pub fn set_level(level: Level) {
 /// keeps it; without one the editor takes it. Returns the new editor, which `WM_COPIED` tells
 /// about the clipboard.
 pub fn open(image: Arc<Image>, tray: HWND, previous: Option<HWND>) -> Result<HWND> {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         // The primary screen, whatever screen the capture came from: its top-left is always 0,0.
         let screen = MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY);
@@ -679,7 +679,7 @@ pub fn open(image: Arc<Image>, tray: HWND, previous: Option<HWND>) -> Result<HWN
         }) {
             Ok(editor) => editor,
             Err(error) => {
-                let _ = DestroyWindow(hwnd);
+                win32::destroy(hwnd);
                 return Err(error);
             }
         };
@@ -698,7 +698,7 @@ pub fn open(image: Arc<Image>, tray: HWND, previous: Option<HWND>) -> Result<HWN
             _ => TME_NONCLIENT,
         };
         track_leave(hwnd, flags);
-        SetTimer(Some(hwnd), LIFETIME_TIMER, CLOCK_MS, None);
+        win32::set_timer(hwnd, LIFETIME_TIMER, CLOCK_MS);
         // Each capture replaces the untouched editors before it.
         close_untouched_but(Some(hwnd), Cause::NewCapture);
         watch_presses();
@@ -809,6 +809,7 @@ fn around(client: RECT, borders: RECT) -> RECT {
 impl Editor {
     fn new(hwnd: HWND, tray: HWND, image: Arc<Image>, mut toolbar: Toolbar) -> Result<Editor> {
         let graphics = graphics::get()?;
+        // SAFETY: Win32 and Direct3D calls on live handles, interfaces and locals.
         unsafe {
             // Windows may have made the window wider than asked, so the client area is the truth.
             let mut client = RECT::default();
@@ -952,6 +953,7 @@ impl Editor {
             )
         } else {
             let scaled = self.scaled(&blurred, scale)?;
+            // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
             let size = unsafe { scaled.GetSize() };
             let size = Vector2 {
                 X: size.width,
@@ -960,6 +962,7 @@ impl Editor {
             (scaled, size, D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR)
         };
         let target = self.target()?;
+        // SAFETY: COM calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.SetTarget(&target);
             self.context.BeginDraw();
@@ -1115,6 +1118,7 @@ impl Editor {
         }
         self.flyout_drawn = flyout;
         let target = self.target()?;
+        // SAFETY: COM calls on live interfaces and pointers to live locals.
         unsafe {
             self.context.SetTarget(&target);
             self.context.BeginDraw();
@@ -1156,6 +1160,7 @@ impl Editor {
 
     /// The swap chain's buffer as a bitmap `context` draws into.
     fn target(&self) -> Result<ID2D1Bitmap1> {
+        // SAFETY: Direct3D calls on live interfaces and pointers to live locals.
         unsafe {
             let buffer: IDXGISurface = self.swap_chain.GetBuffer(0)?;
             self.context.CreateBitmapFromDxgiSurface(
@@ -1486,6 +1491,7 @@ impl Editor {
         let (min, max) = (crop.min, crop.max);
         // Aliased, so where the rectangles meet between pixels, below 100 percent, no seam
         // shows.
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe { self.context.SetAntialiasMode(D2D1_ANTIALIAS_MODE_ALIASED) };
         for (left, top, right, bottom) in [
             (0.0, 0.0, width, min.Y),
@@ -1493,6 +1499,7 @@ impl Editor {
             (0.0, min.Y, min.X, max.Y),
             (max.X, min.Y, width, max.Y),
         ] {
+            // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
             unsafe {
                 self.context.FillRectangle(
                     &D2D_RECT_F {
@@ -1505,6 +1512,7 @@ impl Editor {
                 )
             };
         }
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context
                 .SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE)
@@ -1645,14 +1653,12 @@ impl Editor {
     /// shown since the pointer came onto the bar, and otherwise once it has rested there. Between
     /// buttons none shows.
     fn hover_tip(&mut self, button: Option<Command>) {
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
-        }
+        win32::kill_timer(self.hwnd, TIP_TIMER);
         match button {
             Some(button) if self.warm => self.show_tip(button),
             Some(_) => {
                 self.hide_tip();
-                unsafe { SetTimer(Some(self.hwnd), TIP_TIMER, TIP_WAIT_MS, None) };
+                win32::set_timer(self.hwnd, TIP_TIMER, TIP_WAIT_MS);
             }
             None => self.hide_tip(),
         }
@@ -1660,9 +1666,7 @@ impl Editor {
 
     /// The pointer has rested on a button: shows its tooltip, and the next ones at once.
     fn rested(&mut self) {
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
-        }
+        win32::kill_timer(self.hwnd, TIP_TIMER);
         if let Some(button) = self.hover
             && !self.holding()
         {
@@ -1674,9 +1678,7 @@ impl Editor {
     /// After the pointer leaves the bar, a key or a press: hides any tooltip, and the next one
     /// waits again.
     fn end_tips(&mut self) {
-        unsafe {
-            let _ = KillTimer(Some(self.hwnd), TIP_TIMER);
-        }
+        win32::kill_timer(self.hwnd, TIP_TIMER);
         self.warm = false;
         self.hide_tip();
     }
@@ -1709,7 +1711,7 @@ impl Editor {
             },
         ];
         for corner in &mut corners {
-            let _ = unsafe { ClientToScreen(self.hwnd, corner) };
+            *corner = win32::to_screen(self.hwnd, *corner);
         }
         let on_screen = RECT {
             left: corners[0].x,
@@ -1786,6 +1788,7 @@ impl Editor {
             return Ok(blurred.clone());
         }
         self.blocks.retain(|blur, _| blurs.contains(blur));
+        // SAFETY: Direct2D calls on live interfaces; blocks cover each region at 4 bytes a pixel.
         unsafe {
             let blurred = self.context.CreateBitmap(
                 D2D_SIZE_U { width, height },
@@ -1829,6 +1832,7 @@ impl Editor {
         }
         let width = self.image.width as f32 * scale;
         let height = self.image.height as f32 * scale;
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             let scaled = self.context.CreateBitmap(
                 D2D_SIZE_U {
@@ -1869,6 +1873,7 @@ impl Editor {
     /// keeps its scale.
     fn resized(&mut self) -> Result<()> {
         let mut client = RECT::default();
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe { GetClientRect(self.hwnd, &mut client)? };
         let (width, height) = (client.right - client.left, client.bottom - client.top);
         // Minimised, or not yet laid out.
@@ -1876,6 +1881,7 @@ impl Editor {
             return Ok(());
         }
         if (width, height) != (self.width, self.height) {
+            // SAFETY: Direct3D calls on live interfaces and pointers to live locals.
             unsafe {
                 self.swap_chain.ResizeBuffers(
                     0,
@@ -1945,6 +1951,7 @@ impl Editor {
     /// it now shows, if it zoomed.
     fn zoom_pinned(&mut self, notches: i32, at: POINT) -> Option<RECT> {
         let mut window = RECT::default();
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe { GetWindowRect(self.hwnd, &mut window).ok()? };
         let shown = Vector2 {
             X: window.left as f32,
@@ -1985,11 +1992,13 @@ impl Editor {
         self.end_tips();
         self.finish_typing(None);
         self.pointer = None;
-        let mut corner = POINT {
-            x: 0,
-            y: self.toolbar.height,
-        };
-        let _ = unsafe { ClientToScreen(self.hwnd, &mut corner) };
+        let corner = win32::to_screen(
+            self.hwnd,
+            POINT {
+                x: 0,
+                y: self.toolbar.height,
+            },
+        );
         let mut at = Vector2 {
             X: corner.x as f32,
             Y: corner.y as f32,
@@ -2017,6 +2026,7 @@ impl Editor {
         }
         // A pinned picture has no borders: its window is the image.
         let mut picture = RECT::default();
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe { GetWindowRect(self.hwnd, &mut picture).ok()? };
         let work = screen_of(self.hwnd).rcWork;
         let toolbar = &self.toolbar;
@@ -2783,6 +2793,7 @@ impl Editor {
     /// The capture's pixels at `width` by `height`, scaled from the picture with high quality, as
     /// a fitted image is drawn.
     fn resized_image(&self, width: u32, height: u32) -> Result<Image> {
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             let target = self.context.CreateBitmap(
                 D2D_SIZE_U { width, height },
@@ -2822,6 +2833,7 @@ impl Editor {
 
     /// The pixels of `bitmap`, `width` by `height`, in top-down rows.
     fn read(&self, bitmap: &ID2D1Bitmap1, width: u32, height: u32) -> Result<Vec<u8>> {
+        // SAFETY: Direct2D calls on live interfaces; each row read lies inside the mapped bitmap.
         unsafe {
             let readable = self.context.CreateBitmap(
                 D2D_SIZE_U { width, height },
@@ -2948,8 +2960,7 @@ impl Editor {
             return;
         };
         let colour = self.shown_at(under);
-        let mut pointer = at;
-        let _ = unsafe { ClientToScreen(self.hwnd, &mut pointer) };
+        let pointer = win32::to_screen(self.hwnd, at);
         self.copies.push_back((
             self.edits,
             Status::Picked { colour, pointer },
@@ -3024,6 +3035,7 @@ impl Editor {
             radiusX: bar::RADIUS * scale,
             radiusY: bar::RADIUS * scale,
         };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             self.context
                 .FillRoundedRectangle(&rounded(panel), &self.ink.loupe);
@@ -3148,11 +3160,12 @@ impl Editor {
             return;
         };
         typing.blink = true;
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let rate = unsafe { GetCaretBlinkTime() };
         if rate != 0 && rate != u32::MAX {
-            unsafe { SetTimer(Some(self.hwnd), CARET_TIMER, rate, None) };
+            win32::set_timer(self.hwnd, CARET_TIMER, rate);
         } else {
-            let _ = unsafe { KillTimer(Some(self.hwnd), CARET_TIMER) };
+            win32::kill_timer(self.hwnd, CARET_TIMER);
         }
     }
 
@@ -3188,11 +3201,13 @@ impl Editor {
         else {
             return;
         };
-        let _ = unsafe { KillTimer(Some(self.hwnd), CARET_TIMER) };
+        win32::kill_timer(self.hwnd, CARET_TIMER);
         // Line breaks and spaces after the last character would only make its box larger.
         let text = entry.text().trim_end().to_owned();
         // The keyboard comes back to the editor, unless another window has taken it.
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         if unsafe { GetFocus() } == entry.hwnd() {
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { SetFocus(Some(self.hwnd)) };
         }
         drop(entry);
@@ -3351,6 +3366,7 @@ impl Editor {
         let blurred = self.blurred(&annotations)?;
         let (width, height) = (self.image.width, self.image.height);
         let size = D2D_SIZE_U { width, height };
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         unsafe {
             let target = self.context.CreateBitmap(
                 size,
@@ -3547,6 +3563,7 @@ impl Ink {
     /// The palette for the theme the settings file asks for, as Windows is set now.
     fn new(context: &ID2D1DeviceContext) -> Result<Ink> {
         let palette = theme::palette(settings::current().theme);
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
         let brush = |rgb| unsafe { context.CreateSolidColorBrush(&color(rgb), None) };
         Ok(Ink {
             palette,
@@ -3554,6 +3571,7 @@ impl Ink {
             bar: Paint::new(context, &palette)?,
             handle: brush(palette.handle)?,
             accent: brush(palette.accent)?,
+            // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
             highlight: unsafe {
                 context.CreateSolidColorBrush(
                     &D2D1_COLOR_F {
@@ -3568,6 +3586,7 @@ impl Ink {
             off_image: brush(palette.backdrop)?,
             // The editor blends sRGB values, so this is about as dark as the overlay's dimming,
             // which blends in linear light.
+            // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
             dim: unsafe {
                 context.CreateSolidColorBrush(
                     &D2D1_COLOR_F {
@@ -3584,6 +3603,7 @@ impl Ink {
 /// `image` as a bitmap `context` draws, premultiplied, as the capture holds it, so the backdrop
 /// shows through a window's transparent corners.
 fn picture(context: &ID2D1DeviceContext, image: &Image) -> Result<ID2D1Bitmap1> {
+    // SAFETY: `pixels` holds `height` rows of `width * 4` bytes, the pitch passed.
     unsafe {
         context.CreateBitmap(
             D2D_SIZE_U {
@@ -3737,6 +3757,7 @@ fn choose_colour(hwnd: HWND, colour: Colour) {
 fn repaint_others(hwnd: HWND) {
     EDITORS.with(|editors| {
         for editor in editors.borrow().iter().filter(|editor| editor.hwnd != hwnd) {
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { InvalidateRect(Some(editor.hwnd), None, false) };
         }
     });
@@ -3770,7 +3791,7 @@ fn close_untouched_but(keep: Option<HWND>, cause: Cause) {
     });
     for (hwnd, previous) in closing {
         if cause == Cause::NewCapture {
-            let _ = unsafe { DestroyWindow(hwnd) };
+            win32::destroy(hwnd);
         } else {
             leave(hwnd, previous);
         }
@@ -3781,11 +3802,12 @@ fn close_untouched_but(keep: Option<HWND>, cause: Cause) {
 /// outside it. If it still has the keyboard, it goes back to `previous`, the window the user was
 /// in, if that is still shown; otherwise Windows picks, as when any window closes.
 fn leave(hwnd: HWND, previous: Option<HWND>) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         if GetForegroundWindow() == hwnd {
             window::give_front(previous);
         }
-        let _ = DestroyWindow(hwnd);
+        win32::destroy(hwnd);
     }
 }
 
@@ -3808,7 +3830,7 @@ fn key_down(hwnd: HWND, key: lifetime::Key) {
     if entering {
         became_entered(hwnd);
     } else if stopped {
-        let _ = unsafe { KillTimer(Some(hwnd), LIFETIME_TIMER) };
+        win32::kill_timer(hwnd, LIFETIME_TIMER);
     }
 }
 
@@ -3817,9 +3839,10 @@ fn key_down(hwnd: HWND, key: lifetime::Key) {
 fn became_entered(hwnd: HWND) {
     // Before anything that blocks: every mouse event on the system waits for the hook.
     watch_presses();
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
-        let _ = KillTimer(Some(hwnd), LIFETIME_TIMER);
-        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        win32::kill_timer(hwnd, LIFETIME_TIMER);
+        let style = win32::window_long(hwnd, GWL_EXSTYLE);
         let untouched = (WS_EX_TOOLWINDOW.0 | WS_EX_LAYERED.0) as isize;
         if style & untouched != 0 {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & !untouched);
@@ -3858,12 +3881,11 @@ fn key_kind(key: u16, ctrl: bool, shift: bool, alt: bool) -> lifetime::Key {
 /// `key_kind` for the key in a `WM_KEYDOWN` or `WM_SYSKEYDOWN`, with Ctrl, Shift and Alt as they
 /// are now.
 fn key_kind_now(wparam: WPARAM) -> lifetime::Key {
-    let down = |key: u16| unsafe { GetKeyState(key as i32) } < 0;
     key_kind(
         wparam.0 as u16,
-        down(VK_CONTROL.0),
-        down(VK_SHIFT.0),
-        down(VK_MENU.0),
+        win32::key_down(VK_CONTROL),
+        win32::key_down(VK_SHIFT),
+        win32::key_down(VK_MENU),
     )
 }
 
@@ -3872,16 +3894,18 @@ fn key_kind_now(wparam: WPARAM) -> lifetime::Key {
 /// other window. A drag it was making is abandoned.
 fn pin(hwnd: HWND) {
     enter(hwnd);
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     if unsafe { GetCapture() } == hwnd {
-        let _ = unsafe { ReleaseCapture() };
+        win32::release_capture();
     }
     let Some(Some(picture)) = with(hwnd, Editor::pin) else {
         return;
     };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         // Without its resize frame it has no border, shadow or resize edges, and its client area
         // is the whole window.
-        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let style = win32::window_long(hwnd, GWL_STYLE);
         SetWindowLongPtrW(hwnd, GWL_STYLE, style & !(WS_THICKFRAME.0 as isize));
         frame::square(hwnd);
         let _ = SetWindowPos(
@@ -3902,8 +3926,9 @@ fn unpin(hwnd: HWND) {
     let Some(Some(window)) = with(hwnd, Editor::unpin) else {
         return;
     };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
-        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let style = win32::window_long(hwnd, GWL_STYLE);
         SetWindowLongPtrW(hwnd, GWL_STYLE, style | WS_THICKFRAME.0 as isize);
         frame::round(hwnd);
         let _ = SetWindowPos(
@@ -3934,14 +3959,17 @@ fn below_pinned(hwnd: HWND) {
     }
     // From the front back, the last pinned picture found is the lowest.
     let mut lowest = None;
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let mut next = unsafe { GetTopWindow(None) };
     while let Ok(window) = next {
         if pinned.contains(&window) {
             lowest = Some(window);
         }
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         next = unsafe { GetWindow(window, GW_HWNDNEXT) };
     }
     if let Some(lowest) = lowest {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         let _ = unsafe {
             SetWindowPos(
                 hwnd,
@@ -3962,6 +3990,7 @@ fn screen_of(hwnd: HWND) -> MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         let screen = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         let _ = GetMonitorInfoW(screen, &mut info);
@@ -3981,6 +4010,7 @@ fn screen_size(info: &MONITORINFO) -> Vector2 {
 /// Whether Windows' "Animation effects" setting is on.
 pub fn animates() -> bool {
     let mut on = BOOL(1);
+    // SAFETY: SPI_GETCLIENTAREAANIMATION writes one BOOL, to `on`.
     let _ = unsafe {
         SystemParametersInfoW(
             SPI_GETCLIENTAREAANIMATION,
@@ -4000,13 +4030,14 @@ fn pointer_at(hwnd: HWND, at: POINT) {
         editor.lifetime.pointer(on)
     });
     if stopped == Some(true) {
-        let _ = unsafe { KillTimer(Some(hwnd), LIFETIME_TIMER) };
+        win32::kill_timer(hwnd, LIFETIME_TIMER);
     }
 }
 
 /// The editor `hwnd`'s clock has run out, or a step of its fade is due. The fade ends with the
 /// editor leaving; with Windows' animation effects off, it leaves at once.
 fn lifetime_tick(hwnd: HWND) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let now = unsafe { GetTickCount() };
     let Some((started, lifetime, previous)) = with(hwnd, |editor| {
         (
@@ -4018,7 +4049,7 @@ fn lifetime_tick(hwnd: HWND) {
         return;
     };
     let Lifetime::Fading { since } = lifetime else {
-        let _ = unsafe { KillTimer(Some(hwnd), LIFETIME_TIMER) };
+        win32::kill_timer(hwnd, LIFETIME_TIMER);
         return;
     };
     let elapsed = now.wrapping_sub(since);
@@ -4026,11 +4057,12 @@ fn lifetime_tick(hwnd: HWND) {
         leave(hwnd, previous);
         return;
     }
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         if started {
-            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let style = win32::window_long(hwnd, GWL_EXSTYLE);
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED.0 as isize);
-            SetTimer(Some(hwnd), LIFETIME_TIMER, FADE_STEP_MS, None);
+            win32::set_timer(hwnd, LIFETIME_TIMER, FADE_STEP_MS);
         }
         let alpha = 255 - 255 * elapsed / FADE_MS;
         let _ = SetLayeredWindowAttributes(hwnd, Default::default(), alpha as u8, LWA_ALPHA);
@@ -4049,6 +4081,7 @@ fn watch_presses() {
             .map(|editor| editor.hwnd)
     });
     PRESSES_TO.set(untouched.unwrap_or_default());
+    // SAFETY: `mouse_pressed` is a HOOKPROC, and the hook is this thread's own.
     MOUSE_HOOK.with(|hook| unsafe {
         match untouched {
             Some(_) if hook.get().is_invalid() => {
@@ -4077,10 +4110,12 @@ unsafe extern "system" fn mouse_pressed(code: i32, wparam: WPARAM, lparam: LPARA
             WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN
         )
     {
+        // SAFETY: At HC_ACTION, the lparam of a WH_MOUSE_LL hook points to an MSLLHOOKSTRUCT.
         let at = unsafe { (*(lparam.0 as *const MSLLHOOKSTRUCT)).pt };
         let packed = (at.x as u16 as isize) | ((at.y as u16 as isize) << 16);
-        let _ = unsafe { PostMessageW(Some(editor), WM_PRESSED, WPARAM(0), LPARAM(packed)) };
+        win32::post(editor, WM_PRESSED, WPARAM(0), LPARAM(packed));
     }
+    // SAFETY: Passes the hook's own arguments on unchanged.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
 }
 
@@ -4088,6 +4123,7 @@ unsafe extern "system" fn mouse_pressed(code: i32, wparam: WPARAM, lparam: LPARA
 fn watch_foreground() {
     FOREGROUND_HOOK.with(|hook| {
         if hook.get().is_invalid() {
+            // SAFETY: `foreground_changed` is a WINEVENTPROC, called on this thread.
             hook.set(unsafe {
                 SetWinEventHook(
                     EVENT_SYSTEM_FOREGROUND,
@@ -4108,6 +4144,7 @@ fn stop_watching_foreground() {
     FOREGROUND_HOOK.with(|hook| {
         let old = hook.replace(HWINEVENTHOOK(std::ptr::null_mut()));
         if !old.is_invalid() {
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { UnhookWinEvent(old) };
         }
     });
@@ -4140,6 +4177,7 @@ unsafe extern "system" fn foreground_changed(
 /// keyboard back as they close. A window that takes the front closes them as it comes to the
 /// front, so the window the user was in never gets the keyboard for a moment on the way.
 fn pressed_at(at: POINT) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let under = window::root(unsafe { WindowFromPoint(at) });
     if !keeps_editors_open(under) && !takes_front(under) {
         close_untouched_but(None, Cause::ClickOutside);
@@ -4149,7 +4187,8 @@ fn pressed_at(at: POINT) {
 /// Whether a click on the top-level window `hwnd` brings it to the front: it is enabled and not
 /// one that never takes the front.
 fn takes_front(hwnd: HWND) -> bool {
-    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
+    let style = win32::window_long(hwnd, GWL_EXSTYLE);
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe { IsWindowEnabled(hwnd) }.as_bool() && style & WS_EX_NOACTIVATE.0 as isize == 0
 }
 
@@ -4178,14 +4217,14 @@ fn pointer(lparam: LPARAM) -> POINT {
 /// Where the pointer is in the client area of `hwnd`.
 fn pointer_now(hwnd: HWND) -> POINT {
     let mut at = POINT::default();
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let _ = unsafe { GetCursorPos(&mut at) };
     in_client(hwnd, at)
 }
 
 /// The point `at` on the screen as a point in the client area of `hwnd`.
-fn in_client(hwnd: HWND, mut at: POINT) -> POINT {
-    let _ = unsafe { ScreenToClient(hwnd, &mut at) };
-    at
+fn in_client(hwnd: HWND, at: POINT) -> POINT {
+    win32::to_client(hwnd, at)
 }
 
 /// Asks for `WM_MOUSELEAVE`, or `WM_NCMOUSELEAVE` with `TME_NONCLIENT`, when the pointer leaves
@@ -4197,14 +4236,16 @@ fn track_leave(hwnd: HWND, flags: TRACKMOUSEEVENT_FLAGS) {
         hwndTrack: hwnd,
         dwHoverTime: 0,
     };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let _ = unsafe { TrackMouseEvent(&mut track) };
 }
 
 /// Captures the mouse for `hwnd`, unless it already has it: capturing again would tell it that it
 /// lost the capture, ending the drag or pan another button is making.
 fn capture(hwnd: HWND) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     if unsafe { GetCapture() } != hwnd {
-        unsafe { SetCapture(hwnd) };
+        win32::capture(hwnd);
     }
 }
 
@@ -4234,7 +4275,7 @@ fn press(hwnd: HWND, command: Command) {
         Command::Save => save(hwnd, None),
         Command::Pin => pin(hwnd),
         Command::Close => {
-            let _ = unsafe { DestroyWindow(hwnd) };
+            win32::destroy(hwnd);
         }
         Command::Colour(colour) => choose_colour(hwnd, colour),
         Command::Head(head) => choose_head(hwnd, head),
@@ -4276,6 +4317,7 @@ unsafe extern "system" fn window_proc(
     match msg {
         WM_PAINT => {
             let _ = with(hwnd, |editor| editor.present());
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { ValidateRect(Some(hwnd), None) };
         }
         // The swap chain covers the whole window; erasing would only flicker.
@@ -4309,7 +4351,7 @@ unsafe extern "system" fn window_proc(
                 false
             });
             if close == Some(true) {
-                let _ = unsafe { DestroyWindow(hwnd) };
+                win32::destroy(hwnd);
             } else if asked && !copied {
                 // A copy asked for by a key on an untouched editor failed: it stays, to be tried
                 // again, rather than close on the next click outside it.
@@ -4326,7 +4368,9 @@ unsafe extern "system" fn window_proc(
                 // On the current screen, the one under the pointer.
                 if let Some(file) = &saved {
                     let mut pointer = POINT::default();
+                    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
                     let _ = unsafe { GetCursorPos(&mut pointer) };
+                    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
                     let screen = unsafe { MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST) };
                     notice::show(&save::notice_text(file), screen);
                 }
@@ -4340,7 +4384,7 @@ unsafe extern "system" fn window_proc(
                 !editor.pinned
             });
             if close == Some(true) {
-                let _ = unsafe { DestroyWindow(hwnd) };
+                win32::destroy(hwnd);
             } else if wparam.0 == 0 {
                 // As for a failed copy.
                 enter(hwnd);
@@ -4348,6 +4392,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_FILE_CHOSEN => {
             let chosen =
+                // SAFETY: A nonzero lparam is the Box<PathBuf> post_path leaked for this message.
                 (lparam.0 != 0).then(|| *unsafe { Box::from_raw(lparam.0 as *mut PathBuf) });
             with(hwnd, |editor| editor.choosing_file = false);
             // Cancelling changes nothing.
@@ -4396,7 +4441,7 @@ unsafe extern "system" fn window_proc(
         // Windows' app mode or accent changed: the editor stays open, as it was, in the new colours.
         _ if theme::changed(msg, lparam) => {
             let _ = with(hwnd, Editor::retheme);
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         WM_CTLCOLOREDIT => {
             return entry::colours(HDC(wparam.0 as *mut _), HWND(lparam.0 as *mut _));
@@ -4414,20 +4459,20 @@ unsafe extern "system" fn window_proc(
             if wparam.0 == VK_F4.0 as usize {
                 let repeat = lparam.0 & (1 << 30) != 0;
                 if !repeat {
-                    let _ = unsafe { DestroyWindow(hwnd) };
+                    win32::destroy(hwnd);
                 }
                 return LRESULT(0);
             }
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         // A pinned picture closes, copies and saves, and no other key does anything.
         WM_KEYDOWN if with(hwnd, |editor| editor.pinned) == Some(true) => {
-            let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
-            let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+            let ctrl = win32::key_down(VK_CONTROL);
+            let shift = win32::key_down(VK_SHIFT);
             let repeat = lparam.0 & (1 << 30) != 0;
             match wparam.0 as u16 {
                 key if key == VK_ESCAPE.0 && !repeat => {
-                    let _ = unsafe { DestroyWindow(hwnd) };
+                    win32::destroy(hwnd);
                 }
                 key if key == b'C' as u16 && ctrl && !repeat => copy(hwnd),
                 key if key == b'S' as u16 && ctrl && !shift && !repeat => save(hwnd, None),
@@ -4438,8 +4483,8 @@ unsafe extern "system" fn window_proc(
         WM_KEYDOWN => {
             key_down(hwnd, key_kind_now(wparam));
             with(hwnd, Editor::end_tips);
-            let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
-            let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+            let ctrl = win32::key_down(VK_CONTROL);
+            let shift = win32::key_down(VK_SHIFT);
             // Bit 30 is set when the key was already down: holding Ctrl+C copies once, and
             // holding Ctrl+S saves once.
             let repeat = lparam.0 & (1 << 30) != 0;
@@ -4452,7 +4497,7 @@ unsafe extern "system" fn window_proc(
                         && with(hwnd, Editor::escape_flyout) != Some(true)
                         && !repeat
                     {
-                        let _ = unsafe { DestroyWindow(hwnd) };
+                        win32::destroy(hwnd);
                     }
                 }
                 // With a crop being chosen Enter applies it; holding it on copies nothing more.
@@ -4532,10 +4577,10 @@ unsafe extern "system" fn window_proc(
                 key if !ctrl && arrow(key, shift).is_some() => {
                     let by = arrow(key, shift).unwrap_or_default();
                     if with(hwnd, |editor| editor.nudge(by)) != Some(true) {
-                        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+                        return win32::default_proc(hwnd, msg, wparam, lparam);
                     }
                 }
-                _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+                _ => return win32::default_proc(hwnd, msg, wparam, lparam),
             }
         }
         WM_PRESSED => pressed_at(pointer(lparam)),
@@ -4547,6 +4592,7 @@ unsafe extern "system" fn window_proc(
             let at = in_client(hwnd, pointer(lparam));
             // A pinned picture is resized to the image as it zooms.
             if let Some(Some(picture)) = with(hwnd, |editor| editor.wheel(delta, at)) {
+                // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
                 let _ = unsafe {
                     SetWindowPos(
                         hwnd,
@@ -4577,7 +4623,7 @@ unsafe extern "system" fn window_proc(
                 editor.holding()
             });
             if holding == Some(false) {
-                let _ = unsafe { ReleaseCapture() };
+                win32::release_capture();
             }
         }
         WM_MOUSEMOVE => {
@@ -4605,7 +4651,7 @@ unsafe extern "system" fn window_proc(
                 editor.hover_at(at)
             });
             track_leave(hwnd, TME_NONCLIENT);
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         // Off a button, or off the bar between buttons, onto wherever the pointer is now: still
         // on the bar, the next tooltip still shows at once.
@@ -4656,7 +4702,7 @@ unsafe extern "system" fn window_proc(
             store_slider_choices(hwnd, before);
             // A pan the middle button is still making keeps following the pointer.
             if !holding {
-                let _ = unsafe { ReleaseCapture() };
+                win32::release_capture();
             }
             if let Some(button) = pressed {
                 press(hwnd, button);
@@ -4699,7 +4745,7 @@ unsafe extern "system" fn window_proc(
         // Windows keeps the resize borders beside and below the client area, and draws nothing
         // above it: the bar is the window's top. A pinned picture has none.
         WM_NCCALCSIZE => {
-            let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+            let style = win32::window_long(hwnd, GWL_STYLE);
             frame::calc_size(hwnd, WINDOW_STYLE(style as u32), wparam, lparam);
         }
         // Windows paints the classic sizing border over the top of the client area, where its
@@ -4707,13 +4753,13 @@ unsafe extern "system" fn window_proc(
         // loses the front: a light band above the bar. A -1 asks it to change the state without
         // the painting. The border, corners and shadow are DWM's and are not affected.
         WM_NCACTIVATE => {
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, LPARAM(-1)) };
+            return win32::default_proc(hwnd, msg, wparam, LPARAM(-1));
         }
         WM_NCHITTEST => {
             let at = in_client(hwnd, pointer(lparam));
             // Before the editor exists, while the window is created.
             let Some(part) = with(hwnd, |editor| editor.part(at)) else {
-                return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+                return win32::default_proc(hwnd, msg, wparam, lparam);
             };
             return LRESULT(part.code() as isize);
         }
@@ -4729,12 +4775,12 @@ unsafe extern "system" fn window_proc(
                 }
                 editor.press_outside();
             });
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         // A side button enters an untouched editor as any press does, and does nothing else.
         WM_XBUTTONDOWN | WM_NCXBUTTONDOWN => {
             enter(hwnd);
-            return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+            return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         // Double-clicking the bar or an edge does nothing, rather than maximise the window or
         // stretch it to the screen's height. Double-clicking a pinned picture brings the editor
@@ -4746,6 +4792,7 @@ unsafe extern "system" fn window_proc(
         WM_GETMINMAXINFO => {
             // Before the editor exists, while the window is created at a size that is larger.
             if let Some(Ok(min)) = with(hwnd, |editor| editor.min_size()) {
+                // SAFETY: The lparam of WM_GETMINMAXINFO points to the message's MINMAXINFO.
                 unsafe { (*(lparam.0 as *mut MINMAXINFO)).ptMinTrackSize = min };
             }
         }
@@ -4753,9 +4800,11 @@ unsafe extern "system" fn window_proc(
             // The suggested place, at the size the new toolbar and the same image area need. The
             // toolbar's height differs at every DPI, so the client area changes and WM_SIZE lays
             // the editor out again.
+            // SAFETY: The lparam of WM_DPICHANGED points to the suggested RECT.
             let suggested = unsafe { *(lparam.0 as *const RECT) };
             let dpi = (wparam.0 & 0xFFFF) as u32;
             if let Some(Ok(Some((width, height)))) = with(hwnd, |editor| editor.rescale(dpi)) {
+                // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
                 let _ = unsafe {
                     SetWindowPos(
                         hwnd,
@@ -4780,7 +4829,7 @@ unsafe extern "system" fn window_proc(
             }
             watch_presses();
         }
-        _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+        _ => return win32::default_proc(hwnd, msg, wparam, lparam),
     }
     LRESULT(0)
 }

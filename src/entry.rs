@@ -19,17 +19,17 @@ use windows::{
         System::LibraryLoader::GetModuleHandleW,
         UI::{
             Input::KeyboardAndMouse::{
-                GetKeyState, SetFocus, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_RETURN, VK_SHIFT,
+                SetFocus, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_RETURN, VK_SHIFT,
             },
             WindowsAndMessaging::{
-                CallWindowProcW, CreateWindowExW, DestroyWindow, EC_LEFTMARGIN, EC_RIGHTMARGIN,
-                ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, GWLP_USERDATA, GetClassInfoExW,
-                GetParent, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, HideCaret,
-                PostMessageW, RegisterClassExW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
-                SendMessageW, SetWindowLongPtrW, SetWindowPos, ShowCaret, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_APP, WM_CHAR, WM_CLEAR, WM_CUT, WM_IME_COMPOSITION,
-                WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_KILLFOCUS, WM_PASTE,
-                WM_SETFONT, WM_SYSKEYDOWN, WM_UNDO, WNDCLASSEXW, WNDPROC, WS_CHILD,
+                CallWindowProcW, CreateWindowExW, EC_LEFTMARGIN, EC_RIGHTMARGIN, ES_AUTOHSCROLL,
+                ES_AUTOVSCROLL, ES_MULTILINE, GWLP_USERDATA, GetClassInfoExW, GetParent,
+                GetWindowTextLengthW, GetWindowTextW, HideCaret, RegisterClassExW, SWP_NOACTIVATE,
+                SWP_NOZORDER, SWP_SHOWWINDOW, SendMessageW, SetWindowLongPtrW, SetWindowPos,
+                ShowCaret, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CHAR, WM_CLEAR, WM_CUT,
+                WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_STARTCOMPOSITION, WM_KEYDOWN,
+                WM_KILLFOCUS, WM_PASTE, WM_SETFONT, WM_SYSKEYDOWN, WM_UNDO, WNDCLASSEXW, WNDPROC,
+                WS_CHILD,
             },
         },
     },
@@ -37,6 +37,7 @@ use windows::{
 };
 
 use crate::style::Colour;
+use crate::win32;
 
 /// Posted to the editor when typing ends, which keeps the text: `wparam` is 1 if Esc ended it
 /// and 0 otherwise, and `lparam` is the box.
@@ -67,6 +68,7 @@ thread_local! {
 
 /// Makes the box's window class: the edit control's, taking Enter and Esc for itself.
 pub fn register(instance: HINSTANCE) -> Result<()> {
+    // SAFETY: `entry_proc` is a WNDPROC that hands on to the EDIT procedure saved here.
     unsafe {
         let mut class = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
@@ -103,6 +105,7 @@ impl Entry {
             .encode_utf16()
             .chain([0])
             .collect();
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
             let edit = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
@@ -150,6 +153,7 @@ impl Entry {
     /// line break as `\n`, the same if nothing is selected.
     pub fn selected(&self) -> (usize, usize) {
         let (mut start, mut end) = (0u32, 0u32);
+        // SAFETY: EM_GETSEL writes one u32 to each of `start` and `end`.
         unsafe {
             SendMessageW(
                 self.edit,
@@ -173,6 +177,7 @@ impl Entry {
 
     /// The text in the box as it holds it, with each line break as `\r\n`.
     fn held(&self) -> Vec<u16> {
+        // SAFETY: The buffer has room for the text and its terminator.
         unsafe {
             let mut text = vec![0u16; GetWindowTextLengthW(self.edit) as usize + 1];
             let length = GetWindowTextW(self.edit, &mut text) as usize;
@@ -183,6 +188,7 @@ impl Entry {
 
     /// Gives the box the keyboard, with the caret after the text.
     pub fn focus(&self) {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
             let _ = SetFocus(Some(self.edit));
             let end = GetWindowTextLengthW(self.edit) as usize;
@@ -222,6 +228,7 @@ impl Entry {
             return;
         }
         self.placed = placed;
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
             // Windows draws the caret by inverting the screen, and a box that loses its size with
             // the caret on can no longer invert it back, so it would stay on the image.
@@ -250,6 +257,7 @@ impl Entry {
 
     /// Writes the box in bold Segoe UI `em` screen pixels high, from its very edge.
     fn set_font(&mut self, em: i32) {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
             let font = CreateFontW(
                 -em,
@@ -297,8 +305,9 @@ impl Entry {
 
 impl Drop for Entry {
     fn drop(&mut self) {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         unsafe {
-            let _ = DestroyWindow(self.edit);
+            win32::destroy(self.edit);
             if !self.font.is_invalid() {
                 let _ = DeleteObject(self.font.into());
             }
@@ -309,8 +318,9 @@ impl Drop for Entry {
 /// What the editor answers when the box `edit` asks how to paint itself on `dc`: its colour on
 /// its halo's.
 pub fn colours(dc: HDC, edit: HWND) -> LRESULT {
-    let colours = unsafe { GetWindowLongPtrW(edit, GWLP_USERDATA) } as u64;
+    let colours = win32::window_long(edit, GWLP_USERDATA) as u64;
     let (text, back) = (COLORREF((colours >> 32) as u32), COLORREF(colours as u32));
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         SetTextColor(dc, text);
         SetBkColor(dc, back);
@@ -335,8 +345,7 @@ unsafe extern "system" fn entry_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let down = |key: u16| unsafe { GetKeyState(key as i32) } < 0;
-    let shift = down(VK_SHIFT.0);
+    let shift = win32::key_down(VK_SHIFT);
     if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN) {
         tell(edit, WM_ENTRY_KEY, 0);
     }
@@ -344,7 +353,12 @@ unsafe extern "system" fn entry_proc(
         WM_KEYDOWN if wparam.0 == VK_RETURN.0 as usize && !shift => Some(false),
         WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => Some(true),
         // A multiline edit control selects nothing on Ctrl+A itself.
-        WM_KEYDOWN if wparam.0 == 'A' as usize && down(VK_CONTROL.0) && !down(VK_MENU.0) => {
+        WM_KEYDOWN
+            if wparam.0 == 'A' as usize
+                && win32::key_down(VK_CONTROL)
+                && !win32::key_down(VK_MENU) =>
+        {
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             unsafe { SendMessageW(edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1))) };
             tell(edit, WM_ENTRY_CHANGED, 1);
             return LRESULT(0);
@@ -373,6 +387,7 @@ unsafe extern "system" fn entry_proc(
         tell_editor(edit, escaped);
         return LRESULT(0);
     }
+    // SAFETY: EDIT is the edit control's own procedure, saved when Zilum.Entry was registered.
     let result = unsafe { CallWindowProcW(EDIT.get(), edit, msg, wparam, lparam) };
     // Once the edit control has acted on it, so the editor reads what it holds now.
     if matches!(
@@ -393,19 +408,21 @@ unsafe extern "system" fn entry_proc(
 
 /// Posts `msg` with `wparam` to the editor the box `edit` is in.
 fn tell(edit: HWND, msg: u32, wparam: usize) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         if let Ok(editor) = GetParent(edit) {
-            let _ = PostMessageW(Some(editor), msg, WPARAM(wparam), LPARAM(0));
+            win32::post(editor, msg, WPARAM(wparam), LPARAM(0));
         }
     }
 }
 
 /// Tells the editor typing in `edit` has ended, by Esc if `escaped`.
 fn tell_editor(edit: HWND, escaped: bool) {
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         if let Ok(editor) = GetParent(edit) {
-            let _ = PostMessageW(
-                Some(editor),
+            win32::post(
+                editor,
                 WM_TYPED,
                 WPARAM(escaped as usize),
                 LPARAM(edit.0 as isize),
