@@ -101,6 +101,8 @@ const STYLE: WINDOW_STYLE =
     WINDOW_STYLE(WS_POPUP.0 | WS_THICKFRAME.0 | WS_SYSMENU.0 | WS_CLIPCHILDREN.0);
 
 const TITLE: &str = "Zilum Settings";
+/// The version the release bumps in Cargo.toml.
+const VERSION: &str = concat!("Version ", env!("CARGO_PKG_VERSION"));
 const HEADINGS: [&str; 4] = ["Hotkeys", "Saving", "Appearance", "Startup"];
 /// Each row's name, in the order of `Layout::labels`.
 const LABELS: [&str; 8] = [
@@ -799,6 +801,7 @@ impl State {
         );
         let state = text.label(if on { "On" } else { "Off" })?;
         self.beside(&state, &layout.toggle_state, Tone::Text)?;
+        paint.centred(&text.tip(VERSION)?, &layout.version, Tone::Secondary)?;
 
         let focused = match self.focus.filter(|_| self.ring) {
             Some(Stop::Hotkey(mode)) => Some((layout.hotkeys[mode as usize], radius)),

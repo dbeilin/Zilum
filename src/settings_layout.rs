@@ -1,6 +1,6 @@
 //! Where everything in the Settings window goes, and how the keyboard moves through it: four
 //! groups in one column under a title row, each row a label and a control, every field with room
-//! under it for a message.
+//! under it for a message, and the version centred at the bottom.
 
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
@@ -43,7 +43,10 @@ const NAME_HEIGHT: f32 = 20.0;
 const TOGGLE_WIDTH: f32 = 40.0;
 const TOGGLE_HEIGHT: f32 = 20.0;
 const STATE_GAP: f32 = 12.0;
-/// Below the last row's gap.
+/// Between the last row's gap and the version's line, and that line.
+const ABOVE_VERSION: f32 = 8.0;
+const VERSION_HEIGHT: f32 = LINE_HEIGHT;
+/// Below the version's line.
 const BOTTOM: f32 = 12.0;
 
 /// The rectangle with these edges.
@@ -177,6 +180,9 @@ pub struct Layout {
     /// The switch, and where "On" or "Off" goes beside it.
     pub toggle: D2D_RECT_F,
     pub toggle_state: D2D_RECT_F,
+    /// The line at the bottom that says which version this is, the window's whole width, so
+    /// the version centres in the window.
+    pub version: D2D_RECT_F,
 }
 
 impl Layout {
@@ -230,6 +236,9 @@ impl Layout {
             std::array::from_fn(|at| field + at as f32 * (px(TILE_WIDTH) + px(TILE_GAP)));
         let startup = heading(&mut y);
         let toggle_row = row(&mut y);
+        let version_top = y + px(ABOVE_VERSION);
+        let version = rect(0.0, version_top, width, version_top + px(VERSION_HEIGHT));
+        y = version.bottom;
 
         let browse = D2D_RECT_F {
             left: right - px(BROWSE_WIDTH),
@@ -304,6 +313,7 @@ impl Layout {
                 left: toggle.right + px(STATE_GAP),
                 ..toggle_row
             },
+            version,
         }
     }
 
@@ -361,7 +371,7 @@ mod tests {
     #[test]
     fn at_100_percent_the_title_row_heads_four_groups_in_one_column() {
         let layout = Layout::new(1.0, [1; 5]);
-        assert_eq!((layout.width, layout.height), (520, 704));
+        assert_eq!((layout.width, layout.height), (520, 728));
         assert_eq!(edges(layout.title), [16.0, 0.0, 474.0, 40.0]);
         assert_eq!(edges(layout.close), [474.0, 0.0, 520.0, 40.0]);
         // 16 above each heading and 8 below it.
@@ -374,6 +384,18 @@ mod tests {
                 [16.0, 624.0, 504.0, 644.0],
             ]
         );
+    }
+
+    #[test]
+    fn the_version_line_is_the_window_s_whole_width_under_the_last_row() {
+        let layout = Layout::new(1.0, [1; 5]);
+        // 16 below the toggle's row, 12 above the bottom.
+        assert_eq!(edges(layout.version), [0.0, 700.0, 520.0, 716.0]);
+        let large = Layout::new(1.5, [1; 5]);
+        assert_eq!(edges(large.version), [0.0, 1050.0, 780.0, 1074.0]);
+        // A longer message moves it down with everything else.
+        let moved = Layout::new(1.0, [1, 3, 1, 1, 1]);
+        assert_eq!(edges(moved.version), [0.0, 732.0, 520.0, 748.0]);
     }
 
     #[test]
@@ -457,7 +479,7 @@ mod tests {
     #[test]
     fn at_150_percent_every_length_is_half_as_long_again() {
         let layout = Layout::new(1.5, [1; 5]);
-        assert_eq!((layout.width, layout.height), (780, 1056));
+        assert_eq!((layout.width, layout.height), (780, 1092));
         assert_eq!(edges(layout.close), [711.0, 0.0, 780.0, 60.0]);
         assert_eq!(edges(layout.folder), [216.0, 552.0, 618.0, 600.0]);
         assert_eq!(edges(layout.browse), [630.0, 552.0, 756.0, 600.0]);
@@ -468,7 +490,7 @@ mod tests {
     fn a_longer_message_moves_everything_below_it_down_and_the_window_grows() {
         // The Screen field's message takes three lines, 32 more than one.
         let layout = Layout::new(1.0, [1, 3, 1, 1, 1]);
-        assert_eq!(layout.height, 704 + 32);
+        assert_eq!(layout.height, 728 + 32);
         assert_eq!(edges(layout.hotkeys[1]), [144.0, 144.0, 384.0, 176.0]);
         assert_eq!(edges(layout.messages[1]), [144.0, 180.0, 504.0, 228.0]);
         assert_eq!(edges(layout.hotkeys[2]), [144.0, 236.0, 384.0, 268.0]);
