@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Zilum</title>
+<meta name="description" content="Zilum is a screenshot tool for Windows 11. Press a key, mark it up, copy.">
+<meta property="og:title" content="Zilum">
+<meta property="og:description" content="Zilum is a screenshot tool for Windows 11. Press a key, mark it up, copy.">
+<meta property="og:url" content="https://dbeilin.github.io/Zilum/">
+<meta property="og:image" content="https://dbeilin.github.io/Zilum/assets/hero-editor-arrow.png">
+<link rel="icon" type="image/png" href="assets/icon.png">
+<script>
+  // Before first paint, so a chosen theme never flashes the other one.
+  try {
+    const theme = localStorage.getItem("theme");
+    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+  } catch {}
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <a class="wordmark" href="./">
+    <img src="assets/icon.png" width="24" height="24" alt="">
+    <span>Zilum</span>
+  </a>
+  <div class="bar-end">
+    <nav>
+      <a class="changelog" href="https://github.com/dbeilin/Zilum/releases">Changelog</a>
+      <a class="github" href="https://github.com/dbeilin/Zilum" aria-label="GitHub">
+        <svg width="20" height="20" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </a>
+    </nav>
+    <div class="theme" role="group" aria-label="Theme">
+      <button type="button" data-theme="system" aria-label="System theme" aria-pressed="true">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"><rect x="2" y="3" width="12" height="8" rx="1.5"/><path d="M6 14h4M8 11v3"/></g></svg>
+      </button>
+      <button type="button" data-theme="light" aria-label="Light theme" aria-pressed="false">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.4 3.4l.7.7M11.9 11.9l.7.7M3.4 12.6l.7-.7M11.9 4.1l.7-.7"/></g></svg>
+      </button>
+      <button type="button" data-theme="dark" aria-label="Dark theme" aria-pressed="false">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="hero">
+    <h1>Screenshots for Windows 11</h1>
+    <p class="lede">Capture, mark it up, copy.</p>
+    <a class="download" href="https://github.com/dbeilin/Zilum/releases/latest/download/Zilum.exe">
+      <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      Download from GitHub
+    </a>
+    <!-- Non-breaking spaces keep each phrase whole, so a narrow phone breaks before "Free". -->
+    <p class="release">Version&nbsp;0.1.0&nbsp;· 1.1&nbsp;MB&nbsp;· Free&nbsp;and&nbsp;open&nbsp;source,&nbsp;MIT</p>
+  </section>
+
+  <!-- The features: one stage, a tab per feature. Without the script it shows Annotate. -->
+  <section class="features">
+    <div class="tabs">
+      <div class="tab-list" role="tablist" aria-label="Features">
+        <button type="button" role="tab" id="tab-capture" aria-controls="panel-capture" aria-selected="false" tabindex="-1">Capture</button>
+        <button type="button" role="tab" id="tab-annotate" aria-controls="panel-annotate" aria-selected="true">Annotate</button>
+        <button type="button" role="tab" id="tab-blur" aria-controls="panel-blur" aria-selected="false" tabindex="-1">Blur</button>
+        <button type="button" role="tab" id="tab-text" aria-controls="panel-text" aria-selected="false" tabindex="-1">Copy text</button>
+      </div>
+      <!-- The same labels in the selected colours, clipped to the selected tab, so the colour
+           changes exactly at the pill's edge as it slides. -->
+      <div class="tab-list tab-highlight" aria-hidden="true">
+        <span>Capture</span><span>Annotate</span><span>Blur</span><span>Copy text</span>
+      </div>
+    </div>
+
+    <div class="panels">
+      <figure class="panel" role="tabpanel" id="panel-capture" aria-labelledby="tab-capture" inert>
+        <div class="stage">
+          <img src="assets/overlay-mid-drag.png" width="720" height="490" decoding="async"
+               alt="The overlay over the Bloom wallpaper mid-drag: the selection lit, the screen around it dimmed, and 841 × 441 beside the pointer.">
+        </div>
+        <figcaption>PrintScreen freezes the screen. Drag a region or click a window.</figcaption>
+      </figure>
+      <figure class="panel" role="tabpanel" id="panel-annotate" aria-labelledby="tab-annotate">
+        <div class="stage">
+          <img src="assets/hero-editor-arrow.png" width="880" height="495"
+               alt="The Zilum editor over a region capture of the Windows 11 Bloom wallpaper, its bar along the top and one red arrow placed.">
+        </div>
+        <figcaption>Arrows, rectangles, pen, text and numbered badges. Copy or save from the same bar.</figcaption>
+      </figure>
+      <figure class="panel" role="tabpanel" id="panel-blur" aria-labelledby="tab-blur" inert>
+        <div class="stage">
+          <img src="assets/editor-arrow-blur-flyout.png" width="880" height="495" decoding="async"
+               alt="The editor with a red arrow and a blur placed on a capture of the Bloom, the blur selected and its Level slider open under the bar.">
+        </div>
+        <figcaption>Blur a region in one drag, and set how coarse it is.</figcaption>
+      </figure>
+      <figure class="panel" role="tabpanel" id="panel-text" aria-labelledby="tab-text" inert>
+        <div class="stage">
+          <img src="assets/notice-copied-text.png" width="720" height="310" decoding="async"
+               alt="The Notice “Copied text” on the Bloom wallpaper, beside the edge of Zilum's Settings window.">
+        </div>
+        <figcaption>Copy the text in a region instead of the image, with the OCR built into Windows.</figcaption>
+      </figure>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <a class="wordmark" href="./">
+    <img src="assets/icon.png" width="16" height="16" alt="">
+    <span>Zilum</span>
+  </a>
+  <nav>
+    <a href="https://github.com/dbeilin/Zilum/releases">Changelog</a>
+    <a href="https://github.com/dbeilin/Zilum">GitHub</a>
+    <a href="https://github.com/dbeilin/Zilum/blob/main/LICENSE">MIT Licence</a>
+  </nav>
+</footer>
+
+<script>
+  // The feature tabs: arrow keys move between them, and the highlight is clipped to the selected one.
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  const highlight = document.querySelector(".tab-highlight");
+  const clip = (tab) => {
+    const right = tab.parentElement.clientWidth - tab.offsetLeft - tab.offsetWidth;
+    highlight.style.clipPath = `inset(${tab.offsetTop}px ${right}px ${tab.offsetTop}px ${tab.offsetLeft}px round 8px)`;
+  };
+  const select = (index) => {
+    tabs.forEach((tab, i) => {
+      const selected = i === index;
+      tab.setAttribute("aria-selected", selected);
+      tab.tabIndex = selected ? 0 : -1;
+      document.getElementById(tab.getAttribute("aria-controls")).inert = !selected;
+    });
+    clip(tabs[index]);
+  };
+  const current = () => tabs.findIndex((tab) => tab.getAttribute("aria-selected") === "true");
+  tabs.forEach((tab, i) => tab.addEventListener("click", () => select(i)));
+  tabs[0].parentElement.addEventListener("keydown", (event) => {
+    const last = tabs.length - 1;
+    const next = { ArrowRight: current() + 1, ArrowLeft: current() - 1, Home: 0, End: last }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    const index = (next + tabs.length) % tabs.length;
+    select(index);
+    tabs[index].focus();
+  });
+  // Place the highlight before it may move, and again whenever the labels change width.
+  new ResizeObserver(() => clip(tabs[current()])).observe(tabs[0].parentElement);
+  requestAnimationFrame(() => highlight.classList.add("ready"));
+
+  // The theme picker: System follows Windows, Light and Dark are remembered.
+  const root = document.documentElement;
+  const picker = document.querySelector(".theme");
+  const show = (theme) => {
+    for (const button of picker.children) {
+      button.setAttribute("aria-pressed", button.dataset.theme === theme);
+    }
+  };
+  show(root.dataset.theme ?? "system");
+  picker.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    const theme = button.dataset.theme;
+    if (theme === "system") delete root.dataset.theme;
+    else root.dataset.theme = theme;
+    try {
+      if (theme === "system") localStorage.removeItem("theme");
+      else localStorage.setItem("theme", theme);
+    } catch {}
+    show(theme);
+  });
+</script>
+</body>
+</html>

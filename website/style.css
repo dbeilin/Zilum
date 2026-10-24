@@ -1,0 +1,302 @@
+/* Tokens from src/theme.rs, so the page and the app cannot drift.
+   Light by default; dark from Windows unless the picker chose light, or from the picker. */
+:root {
+  color-scheme: light;
+  --page: #FBFBFB;
+  --text: #1A1A1A;
+  --secondary: #606060;
+  --hover: #EAEAEA;
+  --divider: #E0E0E0;
+  --accent: #0067C0;
+  --on-accent: #FFFFFF;
+  --shot-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 12px 32px -8px rgb(0 0 0 / 0.18);
+  --shot-ring: rgb(127 127 127 / 0.2);
+
+  --ui: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #161616;
+    --text: #FFFFFF;
+    --secondary: #CFCFCF;
+    --hover: #2D2D2D;
+    --divider: #333333;
+    --accent: #4CC2FF;
+    --on-accent: #000000;
+    --shot-shadow: 0 12px 40px -8px rgb(0 0 0 / 0.6);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #161616;
+  --text: #FFFFFF;
+  --secondary: #CFCFCF;
+  --hover: #2D2D2D;
+  --divider: #333333;
+  --accent: #4CC2FF;
+  --on-accent: #000000;
+  --shot-shadow: 0 12px 40px -8px rgb(0 0 0 / 0.6);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font: 16px/1.5 var(--ui);
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+a { color: inherit; text-decoration: none; }
+/* A tap flashes no grey box where the press or the slide is the feedback; links keep it. */
+.download, .theme button, [role="tab"] { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+.bar, main, footer {
+  width: min(960px, 100% - 48px);
+  margin-inline: auto;
+}
+
+/* The bar: wordmark left, links right. */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+}
+.wordmark {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.wordmark img { display: block; }
+footer .wordmark { color: var(--text); font-size: 14px; }
+
+.bar-end { display: flex; align-items: center; gap: 24px; }
+
+nav { display: flex; align-items: center; gap: 24px; font-size: 14px; line-height: 20px; }
+nav a { color: var(--secondary); transition: color 150ms ease; }
+nav .github { display: block; }
+nav .github svg { display: block; }
+@media (hover: hover) and (pointer: fine) {
+  nav a:hover { color: var(--text); }
+}
+
+/* The theme picker: three segments, the chosen one filled. 32 px tall, and the inner radius
+   is the outer one less the 4 px inset, so the corners stay concentric. */
+.theme {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--divider);
+  border-radius: 8px;
+}
+.theme button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--secondary);
+  cursor: pointer;
+  transition: color 150ms ease, background-color 150ms ease, transform 160ms var(--ease-out);
+}
+.theme button svg { display: block; }
+.theme button[aria-pressed="true"] { background: var(--hover); color: var(--text); }
+.theme button:active { transform: scale(0.94); }
+@media (hover: hover) and (pointer: fine) {
+  .theme button:hover { color: var(--text); }
+}
+
+/* The hero: one line, one sentence, one button. */
+.hero {
+  padding-top: 80px;
+  text-align: center;
+}
+/* Two lines of 52 px, so the headline is 104 px tall and the grid holds below it. */
+h1 {
+  margin: 0 auto;
+  max-width: 14ch;
+  font: 600 48px/52px var(--display);
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+.lede {
+  margin: 16px 0 0;
+  color: var(--secondary);
+  font-size: 22px;
+  line-height: 28px;
+}
+
+/* Hover fades the accent toward the page, as Windows 11's accent buttons do, rather than a
+   filter, which repaints the label. Press keeps that shade and scales; any paler, white on the
+   light accent falls under 4.5:1. */
+.download {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  margin-top: 32px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+  transition: transform 160ms var(--ease-out), background-color 150ms ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .download:hover { background: color-mix(in srgb, var(--accent) 90%, var(--page)); }
+}
+.download:active { transform: scale(0.97); }
+
+.release {
+  margin: 16px 0 0;
+  color: var(--secondary);
+  font-size: 14px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The features: a row of tabs over one stage. */
+.features {
+  margin-top: 48px;
+  text-align: center;
+}
+
+/* 40 px tall with the border; the pill's 8 px radius is the group's 12 less the 4 px inset. */
+.tabs {
+  position: relative;
+  display: inline-block;
+  border: 1px solid var(--divider);
+  border-radius: 12px;
+}
+.tab-list {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+}
+.tab-list button, .tab-list span {
+  display: block;
+  height: 32px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 8px;
+  font: 500 14px/32px var(--ui);
+  white-space: nowrap;
+}
+.tab-list button {
+  background: none;
+  color: var(--secondary);
+  cursor: pointer;
+  transition: color 150ms ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .tab-list button:hover { color: var(--text); }
+}
+/* The tabs are one stop for Tab, and the highlight would cover a ring on a single tab,
+   so the ring goes round the group. */
+.tab-list button:focus-visible { outline: none; }
+.tabs:has(button:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* The highlight is a copy of the labels in the selected colours, clipped to the selected tab:
+   as the clip slides, the colour changes at its edge, with no fade between two labels.
+   The fill is on the layer, not each label, so no gap between labels shows mid-slide. */
+.tab-highlight {
+  position: absolute;
+  inset: 0;
+  background: var(--text);
+  color: var(--page);
+  pointer-events: none;
+}
+.tab-highlight.ready { transition: clip-path 250ms var(--ease-out); }
+
+/* Every panel sits in the same cell; the one leaving blurs out as the next blurs in. */
+.panels {
+  display: grid;
+  margin-top: 32px;
+}
+.panel {
+  grid-area: 1 / 1;
+  margin: 0;
+  transition: opacity 250ms ease, filter 250ms ease, transform 300ms var(--ease-out);
+}
+.panel[inert] {
+  opacity: 0;
+  filter: blur(6px);
+  transform: scale(0.98);
+}
+/* The stage keeps its ratio whatever the capture's shape; the capture fits inside it. */
+.stage {
+  display: grid;
+  grid-template: 100% / 100%;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  min-height: 0;
+}
+.stage img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 12px;
+  outline: 1px solid var(--shot-ring);
+  outline-offset: -1px;
+  box-shadow: var(--shot-shadow);
+}
+.panel figcaption {
+  margin-top: 24px;
+  color: var(--secondary);
+  text-wrap: balance;
+}
+
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 120px;
+  padding-block: 24px 40px;
+  border-top: 1px solid var(--divider);
+  color: var(--secondary);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+@media (max-width: 600px) {
+  .bar, main, footer { width: calc(100% - 32px); }
+  .bar-end, .bar nav { gap: 16px; }
+  .hero { padding-top: 48px; }
+  h1 { font-size: 36px; line-height: 40px; }
+  .features { margin-top: 40px; }
+  .tab-list button, .tab-list span { padding: 0 12px; }
+  .panels { margin-top: 24px; }
+  .stage { aspect-ratio: 3 / 2; }
+  .stage img { border-radius: 8px; }
+  .panel figcaption { margin-top: 16px; }
+  footer { margin-top: 80px; flex-direction: column; align-items: flex-start; gap: 8px; }
+}
+
+/* The foot carries Changelog, so the narrowest bar can let it go; the tabs tighten to fit. */
+@media (max-width: 359px) {
+  .bar .changelog { display: none; }
+  .tab-list button, .tab-list span { padding: 0 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .download:active, .theme button:active { transform: none; }
+  .tab-highlight.ready { transition: none; }
+  .panel { transition: opacity 150ms ease; }
+  .panel[inert] { filter: none; transform: none; }
+}

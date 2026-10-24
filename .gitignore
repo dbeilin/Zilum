@@ -1,0 +1,9 @@
+/target
+
+# Working notes, agent files and design docs stay on this machine.
+/.scratch/
+/.claude/
+/CLAUDE.md
+/LESSONS.md
+/GLOSSARY.md
+/docs/
