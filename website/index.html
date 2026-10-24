@@ -106,6 +106,33 @@
       </figure>
     </div>
   </section>
+
+  <!-- The one benchmark: warm medians from bench/latency, measured the same way for both apps.
+       Each bar is to scale; without the script, or with reduced motion, it shows as it ends. -->
+  <section class="bench" aria-labelledby="bench-title">
+    <h2 id="bench-title">From the key to the overlay on screen</h2>
+    <dl class="race">
+      <div class="lane zilum" style="--ms: 50">
+        <dt>Zilum</dt>
+        <dd><span class="bar"></span><span class="ms" data-ms="50">50&nbsp;ms</span></dd>
+      </div>
+      <div class="lane other" style="--ms: 198">
+        <dt>Snipping Tool</dt>
+        <dd><span class="bar"></span><span class="ms" data-ms="198">198&nbsp;ms</span></dd>
+      </div>
+    </dl>
+    <!-- The caveat sits behind the ? button: it shows on hover, on keyboard focus, and on a tap,
+         which keeps it open until a tap elsewhere or Esc. Screen readers get it as the description. -->
+    <p class="note">
+      <a href="https://github.com/dbeilin/Zilum/tree/main/bench/latency">Method&nbsp;and&nbsp;raw&nbsp;data</a>
+      <span class="about">
+        <button type="button" class="info" aria-label="About these numbers" aria-describedby="bench-about" aria-expanded="false">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"><circle cx="8" cy="8" r="6.5"/><path d="M6.25 6.25a1.75 1.75 0 1 1 2.5 1.6c-.5.23-.75.6-.75 1.15v.25"/></g><circle cx="8" cy="11.25" r=".8" fill="currentColor"/></svg>
+        </button>
+        <span class="tip" id="bench-about" role="tooltip">One&nbsp;machine,&nbsp;warm&nbsp;runs,&nbsp;median&nbsp;of&nbsp;30.<span class="slowed" hidden> Played&nbsp;six&nbsp;times&nbsp;slower.</span></span>
+      </span>
+    </p>
+  </section>
 </main>
 
 <footer>
@@ -151,6 +178,55 @@
   // Place the highlight before it may move, and again whenever the labels change width.
   new ResizeObserver(() => clip(tabs[current()])).observe(tabs[0].parentElement);
   requestAnimationFrame(() => highlight.classList.add("ready"));
+
+  // The benchmark: both bars grow on one clock, six times slower than measured, so Zilum's
+  // stops at 50 ms while the Snipping Tool's runs on to 198. Linear, because it is time.
+  // It plays once, the first time most of it is in view, and not at all with reduced motion.
+  const bench = document.querySelector(".bench");
+  if (!matchMedia("(prefers-reduced-motion: reduce)").matches && "IntersectionObserver" in window) {
+    const slow = 6;
+    const lanes = [...bench.querySelectorAll(".lane")].map((lane) => ({
+      ms: Number(lane.querySelector(".ms").dataset.ms),
+      bar: lane.querySelector(".bar"),
+      label: lane.querySelector(".ms"),
+    }));
+    const end = Math.max(...lanes.map((lane) => lane.ms));
+    const draw = (t) => {
+      for (const { ms, bar, label } of lanes) {
+        const done = Math.min(t, ms);
+        const hidden = bar.offsetWidth * (1 - done / ms);
+        bar.style.clipPath = `inset(0 ${hidden}px 0 0 round 0 4px 4px 0)`;
+        label.style.transform = `translateX(${-hidden}px)`;
+        label.textContent = `${Math.round(done)}\u00a0ms`;
+      }
+    };
+    const play = () => {
+      let start;
+      const frame = (now) => {
+        start ??= now;
+        const t = Math.min((now - start) / slow, end);
+        draw(t);
+        if (t < end) requestAnimationFrame(frame);
+        else for (const { bar, label } of lanes) bar.style.clipPath = label.style.transform = "";
+      };
+      requestAnimationFrame(frame);
+    };
+    bench.querySelector(".slowed").hidden = false;
+    draw(0);
+    const seen = new IntersectionObserver((entries) => {
+      if (!entries[0].isIntersecting) return;
+      seen.disconnect();
+      play();
+    }, { threshold: 0.6 });
+    seen.observe(bench.querySelector(".race"));
+  }
+
+  // The benchmark's ? button: a tap or click keeps the note open; a tap elsewhere or Esc closes it.
+  const info = bench.querySelector(".info");
+  const setOpen = (open) => info.setAttribute("aria-expanded", open);
+  info.addEventListener("click", () => setOpen(info.getAttribute("aria-expanded") !== "true"));
+  document.addEventListener("click", (event) => { if (!event.target.closest(".about")) setOpen(false); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") setOpen(false); });
 
   // The theme picker: System follows Windows, Light and Dark are remembered.
   const root = document.documentElement;

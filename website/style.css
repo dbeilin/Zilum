@@ -262,6 +262,146 @@ h1 {
   text-wrap: balance;
 }
 
+/* The benchmark: two bars on one time scale, Zilum's in the accent and the Snipping Tool's in a
+   grey of the secondary text, which keeps 3:1 against the page in both schemes and stays quieter
+   than the accent. The value rides the bar's end; 64 px of the lane is kept for it. */
+.bench {
+  --other: color-mix(in srgb, var(--secondary) 70%, var(--page));
+  max-width: 560px;
+  margin: 96px auto 0;
+  font-variant-numeric: tabular-nums;
+}
+.bench h2 {
+  margin: 0 0 24px;
+  font: 600 16px/24px var(--ui);
+  text-align: center;
+}
+.race {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 12px 16px;
+  margin: 0;
+}
+.lane {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
+  align-items: center;
+}
+.lane dt {
+  color: var(--secondary);
+  font-size: 14px;
+  line-height: 20px;
+  text-align: right;
+}
+.lane dd {
+  position: relative;
+  height: 20px;
+  margin: 0;
+}
+/* Square at the baseline, rounded at the end the time reached. */
+.lane .bar {
+  position: absolute;
+  top: 6px;
+  left: 0;
+  width: calc(var(--ms) / 198 * (100% - 64px));
+  height: 8px;
+  border-radius: 0 4px 4px 0;
+  background: var(--other);
+}
+.lane .ms {
+  position: absolute;
+  top: 0;
+  left: calc(var(--ms) / 198 * (100% - 64px) + 8px);
+  color: var(--secondary);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.lane.zilum dt, .lane.zilum .ms { color: var(--text); font-weight: 600; }
+.lane.zilum .bar { background: var(--accent); }
+
+.bench .note {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  margin: 24px 0 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+/* The ? button: a 24 px target round a 16 px glyph. Its note opens below the line, centred under
+   it so it covers none of the bars and never runs off a phone's edge. */
+.about { display: inline-flex; }
+.info {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--secondary);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 150ms ease, transform 160ms var(--ease-out);
+}
+.info svg { display: block; }
+.info:active { transform: scale(0.94); }
+.info[aria-expanded="true"] { color: var(--text); }
+@media (hover: hover) and (pointer: fine) {
+  .info:hover { color: var(--text); }
+}
+.tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  width: max-content;
+  max-width: 100%;
+  margin-inline: auto;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--text);
+  color: var(--page);
+  font-size: 14px;
+  line-height: 20px;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-2px) scale(0.97);
+  transform-origin: 50% 0;
+  transition: opacity 125ms ease, transform 125ms var(--ease-out);
+}
+/* Shown at once on focus or a tap; on hover after a short wait, so passing over it opens nothing. */
+.info:focus-visible + .tip,
+.info[aria-expanded="true"] + .tip {
+  opacity: 1;
+  transform: none;
+  transition-duration: 150ms;
+}
+@media (hover: hover) and (pointer: fine) {
+  .info:hover + .tip {
+    opacity: 1;
+    transform: none;
+    transition-duration: 150ms;
+    transition-delay: 300ms;
+  }
+}
+.bench a {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--divider);
+  transition: text-decoration-color 150ms ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .bench a:hover { text-decoration-color: var(--text); }
+}
+
 footer {
   display: flex;
   align-items: center;
@@ -285,6 +425,7 @@ footer {
   .stage { aspect-ratio: 3 / 2; }
   .stage img { border-radius: 8px; }
   .panel figcaption { margin-top: 16px; }
+  .bench { margin-top: 64px; }
   footer { margin-top: 80px; flex-direction: column; align-items: flex-start; gap: 8px; }
 }
 
@@ -299,4 +440,5 @@ footer {
   .tab-highlight.ready { transition: none; }
   .panel { transition: opacity 150ms ease; }
   .panel[inert] { filter: none; transform: none; }
+  .info:active, .tip { transform: none; }
 }
