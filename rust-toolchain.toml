@@ -1,0 +1,6 @@
+# One exact Rust for local builds, CI and releases, so a release does not
+# change because stable moved overnight.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

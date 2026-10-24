@@ -1,37 +1,83 @@
-# Builds the release exe for a version tag and attaches it, with its
-# SHA-256, to a draft GitHub Release. The draft is published by hand after
-# the downloaded exe has passed the desktop checks (verify-zilum).
+# Builds the release exe for a version tag and attaches it to a draft
+# GitHub Release. The draft is published by hand after the downloaded exe
+# has passed the desktop checks (verify-zilum); publishing makes the
+# release immutable.
+#
+# Two jobs, so the write token never shares a job with the compiler:
+# - build: read-only, no cache, the toolchain pinned in rust-toolchain.toml.
+# - publish: waits for approval on the release environment, attests the exe
+#   and drafts the release with gh. It runs no third-party code.
+#
+# Every action is pinned to a full commit SHA, its version in the comment.
 name: Release
 
 on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install toolchain
+        run: rustup toolchain install
+
+      - name: Tag matches Cargo.toml
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json).packages[0].version
+          if ($env:TAG -ne "v$version") { throw "Tag $env:TAG does not match Cargo.toml version $version" }
 
       - name: Build release
         run: cargo build --release --locked
 
-      - name: Checksum
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash target/release/Zilum.exe -Algorithm SHA256).Hash.ToLower()
-          "$hash  Zilum.exe" | Set-Content -NoNewline target/release/Zilum.exe.sha256
-          Get-Content target/release/Zilum.exe.sha256
-
-      - uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          draft: true
-          name: Zilum ${{ github.ref_name }}
-          files: |
-            target/release/Zilum.exe
-            target/release/Zilum.exe.sha256
+          path: target/release/Zilum.exe
+          archive: false
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write # draft the release and upload the exe
+      id-token: write # sign the attestation
+      attestations: write # store the attestation
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Zilum.exe
+          path: dist
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/Zilum.exe
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$TAG" dist/Zilum.exe
+          --repo "$GITHUB_REPOSITORY"
+          --draft --verify-tag
+          --title "Zilum $TAG"
+          --generate-notes

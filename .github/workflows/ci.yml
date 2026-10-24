@@ -3,6 +3,7 @@
 # is kept as a run artifact so every commit yields a downloadable build.
 #
 # The desktop checks (verify-zilum) need a real desktop and are not run here.
+# Every action is pinned to a full commit SHA, its version in the comment.
 name: CI
 
 on:
@@ -22,13 +23,14 @@ jobs:
   check:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
+          persist-credentials: false
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Install toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Format
         run: cargo fmt --check
@@ -42,7 +44,7 @@ jobs:
       - name: Build release
         run: cargo build --release --locked
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Zilum-${{ github.sha }}
           path: target/release/Zilum.exe
