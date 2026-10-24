@@ -1,9 +1,5 @@
-# Run by hand from the Actions tab. Raises the version in Cargo.toml and
-# Cargo.lock on a release branch and opens a pull request for it, with the
-# commits since the last release as draft notes. The PR description becomes
-# the release notes; merging it publishes the release (release.yml).
-#
-# Every action is pinned to a full commit SHA, its version in the comment.
+# The PR description becomes the release notes; merging it publishes the
+# release (release.yml).
 name: Prepare release
 
 on:

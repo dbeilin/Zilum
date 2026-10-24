@@ -1,9 +1,4 @@
-# Checks every push and pull request on a hosted Windows runner:
-# formatting, clippy, the unit tests and a release build. The built exe
-# is kept as a run artifact so every commit yields a downloadable build.
-#
 # The desktop checks (verify-zilum) need a real desktop and are not run here.
-# Every action is pinned to a full commit SHA, its version in the comment.
 name: CI
 
 on:

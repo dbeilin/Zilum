@@ -1,4 +1,3 @@
-# Publishes the website folder to GitHub Pages when a push to main changes it.
 name: Pages
 
 on:
@@ -19,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pages: write # deploy to Pages
+      pages: write
       id-token: write # prove the deployment's origin to Pages
     environment:
       name: github-pages
