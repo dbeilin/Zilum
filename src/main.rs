@@ -181,6 +181,11 @@ fn main() -> Result<()> {
         editor::set_head(settings.head);
         editor::set_fill(settings.fill);
         editor::set_level(settings.blur);
+        // A start the user made says Zilum is there, as it has no window. Any problem below
+        // follows and replaces it. A start at sign-in says nothing.
+        if !startup::at_sign_in() {
+            notify(hwnd, &running(settings.hotkeys[Mode::Capture as usize]));
+        }
         if invalid {
             notify(hwnd, "Some settings were invalid and reset");
         }
@@ -761,6 +766,14 @@ fn load_icon(metric: SYSTEM_METRICS_INDEX) -> Result<HICON> {
             LR_DEFAULTCOLOR,
         )?;
         Ok(HICON(icon.0))
+    }
+}
+
+/// What a start the user made says, naming the capture hotkey if there is one.
+fn running(capture: Option<Hotkey>) -> String {
+    match capture {
+        Some(hotkey) => format!("Zilum is running in the tray. Press {hotkey} to capture."),
+        None => "Zilum is running in the tray.".into(),
     }
 }
 

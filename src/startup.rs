@@ -9,9 +9,16 @@ use windows::{
 
 const RUN: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
 const NAME: PCWSTR = w!("Zilum");
+/// The argument the Run entry passes, so a start at sign-in can tell itself from one the user made.
+const FLAG: &str = "--startup";
+
+/// Whether Windows started this copy at sign-in, rather than the user.
+pub fn at_sign_in() -> bool {
+    std::env::args().skip(1).any(|arg| arg == FLAG)
+}
 
 /// Makes Zilum start at sign-in from where its exe is now, or stops it starting then. The entry
-/// holds the exe's path, so it is set again at each start while on.
+/// holds the exe's path and the sign-in flag, so it is set again at each start while on.
 pub fn set(on: bool) {
     // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
@@ -26,7 +33,8 @@ pub fn set(on: bool) {
         let command: Vec<u16> = [u16::from(b'"')]
             .into_iter()
             .chain(exe.as_os_str().encode_wide())
-            .chain([u16::from(b'"'), 0])
+            .chain(format!("\" {FLAG}").encode_utf16())
+            .chain([0])
             .collect();
         let _ = RegSetKeyValueW(
             HKEY_CURRENT_USER,
