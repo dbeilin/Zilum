@@ -48,7 +48,7 @@ Hit PrintScreen, grab a region or a window, and mark it up.
 
 ## Small on purpose
 
-| 1.1 MB | ~20 MB | 50 ms |
+| 1.3 MB | ~20 MB | 50 ms |
 |:-:|:-:|:-:|
 | single exe | memory in use | key to overlay |
 
