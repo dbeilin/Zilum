@@ -139,3 +139,13 @@ jobs:
             --title "Zilum $VERSION" \
             --latest \
             "${notes[@]}"
+
+  # A release made with the workflow token starts no other workflow, so call the site deploy here.
+  site:
+    name: Update the site
+    needs: publish
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml

@@ -1,3 +1,5 @@
+# Deploys the site on a website change, and from Release after each new release,
+# so the version and size under the download button follow the latest release.
 name: Pages
 
 on:
@@ -6,20 +8,22 @@ on:
     paths:
       - 'website/**'
       - '.github/workflows/pages.yml'
+  workflow_call:
+  workflow_dispatch:
 
 permissions: {}
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pages: write
       id-token: write # prove the deployment's origin to Pages
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -27,6 +31,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Stamp the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r tag size < <(gh release view --repo "$GITHUB_REPOSITORY" --json tagName,assets \
+            --jq '[.tagName, (.assets[] | select(.name == "Zilum.exe") | .size)] | @tsv')
+          version=${tag#v}
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$size" =~ ^[0-9]+$ ]]; then
+            echo "::error::the latest release '$tag' has no X.Y.Z tag or no Zilum.exe"
+            exit 1
+          fi
+          mb=$(awk -v b="$size" 'BEGIN { printf "%.1f", b / 1048576 }')
+          sed -i "s/Version&nbsp;[0-9.]*&nbsp;· [0-9.]*&nbsp;MB/Version\&nbsp;$version\&nbsp;· $mb\&nbsp;MB/" website/index.html
+          grep -q "Version&nbsp;$version&nbsp;· $mb&nbsp;MB" website/index.html
+          echo "Version $version, $mb MB"
+
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
