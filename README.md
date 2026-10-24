@@ -5,7 +5,7 @@
 <h1 align="center">Zilum</h1>
 
 <p align="center">
-  Screenshots for Windows 11. Capture, mark it up, copy.
+  A fast, tiny screenshot tool for Windows 11.
 </p>
 
 <p align="center">
@@ -27,26 +27,36 @@
   <img src="website/assets/hero-editor-arrow.png" width="880" alt="The Zilum editor over a capture of the Windows 11 Bloom wallpaper, its bar along the top and one red arrow placed.">
 </p>
 
-## Features
+## What it does
 
-- **Capture** a region, a window or the whole screen. PrintScreen freezes the screen; drag a region or click a window.
-- **Mark it up** with arrows, rectangles, pen, text and numbered badges, then crop, resize or pick a colour off the image.
-- **Blur** a region in one drag, and set how coarse it is.
-- **Copy text** out of a region instead of the image, with the OCR built into Windows.
-- **Pin** a capture above every other window to keep it in view.
-- **Fast.** 50 ms from the key to the overlay on screen, against 198 ms for the Snipping Tool ([method and raw data](bench/)).
-- **Small.** One 1.1 MB exe. No installer, no account, no network.
+Hit PrintScreen, grab a region or a window, and mark it up.
+
+- Arrows, boxes, pen, text and numbered steps
+- Blur in one drag
+- Crop and resize
+- Colour picker that copies the hex code
+- Copy or save in one key
+- Pin a capture above your other windows
+- OCR: copy the text out of anything on screen
 
 <table>
   <tr>
     <td width="50%"><img src="assets/capture.png" alt="The overlay mid-drag: the selection lit, the screen around it dimmed, and 841 × 441 beside the pointer."></td>
     <td width="50%"><img src="website/assets/editor-arrow-blur-flyout.png" alt="The editor with an arrow and a blur placed, the blur's Level slider open under the bar."></td>
   </tr>
-  <tr>
-    <td align="center">Drag a region or click a window</td>
-    <td align="center">Blur, with its level under the bar</td>
-  </tr>
 </table>
+
+## Small on purpose
+
+| 1.1 MB | ~20 MB | 50 ms |
+|:-:|:-:|:-:|
+| single exe | memory in use | key to overlay |
+
+The Snipping Tool takes 198 ms to open its overlay on the same machine ([how it was measured](bench/)).
+
+## Privacy
+
+Zilum works offline and collects nothing. The exe contains no networking code, so there's no telemetry and no update check (watch this repo's releases for new versions). Captures go to your clipboard or save folder, and OCR runs on your PC with the engine built into Windows.
 
 ## Install
 
@@ -56,6 +66,8 @@
 
 > [!NOTE]
 > If PrintScreen still opens the Snipping Tool, turn off **Use the Print screen key to open screen capture** in Windows Settings › Accessibility › Keyboard.
+
+To remove Zilum, turn off Start with Windows, quit it from the tray and delete the exe. Its settings are in `%APPDATA%\Zilum`.
 
 ## Usage
 
