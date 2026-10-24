@@ -1,4 +1,72 @@
-/target
+# Cargo.lock stays tracked: Zilum is a binary, so the lockfile pins the build.
+
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+*.profraw
+*.profdata
+/mutants.out*/
+/tarpaulin-report.*
+/lcov.info
+/cobertura.xml
+
+# Cargo credentials (`cargo login` writes them under the home .cargo, but
+# never let a project-level copy in either)
+.cargo/credentials
+.cargo/credentials.toml
+
+# Secrets and signing material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.snk
+*.cer
+*.crt
+*.jks
+*.keystore
+*.kdbx
+id_rsa*
+id_ed25519*
+*.gpg
+*.asc
+secrets.*
+credentials.*
+
+# Crash dumps and logs, which can hold screen pixels and paths
+*.dmp
+*.mdmp
+*.log
+
+# Windows
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS and Linux, for anyone cloning elsewhere
+.DS_Store
+.directory
+*~
+
+# Editors
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+.vs/
+*.sublime-workspace
+
+# Local settings copies made while verifying
+settings.ini
+settings.ini.*
+*.bak
 
 # Working notes, agent files and design docs stay on this machine.
 /.scratch/
@@ -7,3 +75,4 @@
 /LESSONS.md
 /GLOSSARY.md
 /docs/
+/graphify-out/
