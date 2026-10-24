@@ -52,7 +52,7 @@ use windows::{
                 WA_INACTIVE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPOS, WM_ACTIVATE,
                 WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED,
                 WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-                WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT,
+                WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT,
                 WM_RBUTTONDOWN, WM_SETFONT, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
                 WM_WINDOWPOSCHANGING, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
                 WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
@@ -1144,6 +1144,11 @@ unsafe extern "system" fn window_proc(
             return win32::default_proc(hwnd, msg, wparam, lparam);
         }
         WM_NCCALCSIZE => frame::calc_size(hwnd, STYLE, wparam, lparam),
+        // Windows paints the classic sizing border over the top of the client area, where its
+        // own frame would be, in the active or inactive border colour, when the window gains or
+        // loses the front: a light band above the title. A -1 asks it to change the state
+        // without the painting.
+        WM_NCACTIVATE => return win32::default_proc(hwnd, msg, wparam, LPARAM(-1)),
         // The title row moves the window, except over Close; nothing resizes it.
         WM_NCHITTEST => {
             let at = win32::to_client(hwnd, pointer(lparam));
