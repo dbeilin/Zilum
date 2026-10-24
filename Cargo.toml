@@ -64,6 +64,3 @@ features = [
 
 [lints.clippy]
 undocumented_unsafe_blocks = "warn"
-
-[build-dependencies]
-winresource = "0.1.34"
