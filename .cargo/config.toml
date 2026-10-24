@@ -1,4 +1,12 @@
 # The C runtime linked into the exe, so it starts on a Windows that has no
 # Visual C++ Redistributable: Windows ships the UCRT, not VCRUNTIME140.dll.
+#
+# DEPENDENTLOADFLAG 0x800 (LOAD_LIBRARY_SEARCH_SYSTEM32) makes the loader
+# take the exe's DLL imports (d3d11, d2d1, dcomp, dwrite, dwmapi,
+# d3dcompiler_47) from System32 only, never from the folder the exe sits in,
+# so a DLL dropped next to it in Downloads is not loaded.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-arg=/DEPENDENTLOADFLAG:0x800",
+]
