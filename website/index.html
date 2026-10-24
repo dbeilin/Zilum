@@ -59,12 +59,12 @@
     <p class="release">Version&nbsp;0.1.0&nbsp;· 1.1&nbsp;MB&nbsp;· Free&nbsp;and&nbsp;open&nbsp;source,&nbsp;MIT</p>
   </section>
 
-  <!-- The features: one stage, a tab per feature. Without the script it shows Annotate. -->
+  <!-- The features: one stage, a tab per feature. Without the script it shows Capture. -->
   <section class="features">
     <div class="tabs">
       <div class="tab-list" role="tablist" aria-label="Features">
-        <button type="button" role="tab" id="tab-capture" aria-controls="panel-capture" aria-selected="false" tabindex="-1">Capture</button>
-        <button type="button" role="tab" id="tab-annotate" aria-controls="panel-annotate" aria-selected="true">Annotate</button>
+        <button type="button" role="tab" id="tab-capture" aria-controls="panel-capture" aria-selected="true">Capture</button>
+        <button type="button" role="tab" id="tab-annotate" aria-controls="panel-annotate" aria-selected="false" tabindex="-1">Annotate</button>
         <button type="button" role="tab" id="tab-blur" aria-controls="panel-blur" aria-selected="false" tabindex="-1">Blur</button>
         <button type="button" role="tab" id="tab-text" aria-controls="panel-text" aria-selected="false" tabindex="-1">Copy text</button>
       </div>
@@ -76,16 +76,16 @@
     </div>
 
     <div class="panels">
-      <figure class="panel" role="tabpanel" id="panel-capture" aria-labelledby="tab-capture" inert>
+      <figure class="panel" role="tabpanel" id="panel-capture" aria-labelledby="tab-capture">
         <div class="stage">
-          <img src="assets/overlay-mid-drag.png" width="720" height="490" decoding="async"
+          <img src="assets/overlay-mid-drag.png" width="720" height="490"
                alt="The overlay over the Bloom wallpaper mid-drag: the selection lit, the screen around it dimmed, and 841 × 441 beside the pointer.">
         </div>
         <figcaption>PrintScreen freezes the screen. Drag a region or click a window.</figcaption>
       </figure>
-      <figure class="panel" role="tabpanel" id="panel-annotate" aria-labelledby="tab-annotate">
+      <figure class="panel" role="tabpanel" id="panel-annotate" aria-labelledby="tab-annotate" inert>
         <div class="stage">
-          <img src="assets/hero-editor-arrow.png" width="880" height="495"
+          <img src="assets/hero-editor-arrow.png" width="880" height="495" decoding="async"
                alt="The Zilum editor over a region capture of the Windows 11 Bloom wallpaper, its bar along the top and one red arrow placed.">
         </div>
         <figcaption>Arrows, rectangles, pen, text and numbered badges. Copy or save from the same bar.</figcaption>
