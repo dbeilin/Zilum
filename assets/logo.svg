@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="128" height="128">
+  <!-- The tray icon (icon.png) redrawn as vectors, for the README. -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#2060D0"/>
+  <g fill="#FFFFFF">
+    <rect x="13" y="13" width="16" height="5"/>
+    <rect x="13" y="13" width="5" height="16"/>
+    <rect x="35" y="13" width="16" height="5"/>
+    <rect x="46" y="13" width="5" height="16"/>
+    <rect x="13" y="46" width="16" height="5"/>
+    <rect x="13" y="35" width="5" height="16"/>
+    <rect x="35" y="46" width="16" height="5"/>
+    <rect x="46" y="35" width="5" height="16"/>
+  </g>
+</svg>
