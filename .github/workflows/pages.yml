@@ -1,9 +1,12 @@
-# Publishes the website folder to GitHub Pages on every push to main.
+# Publishes the website folder to GitHub Pages when a push to main changes it.
 name: Pages
 
 on:
   push:
     branches: [main]
+    paths:
+      - 'website/**'
+      - '.github/workflows/pages.yml'
 
 permissions:
   contents: read

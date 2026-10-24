@@ -1,0 +1,37 @@
+# Builds the release exe for a version tag and attaches it, with its
+# SHA-256, to a draft GitHub Release. The draft is published by hand after
+# the downloaded exe has passed the desktop checks (verify-zilum).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash target/release/Zilum.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  Zilum.exe" | Set-Content -NoNewline target/release/Zilum.exe.sha256
+          Get-Content target/release/Zilum.exe.sha256
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: Zilum ${{ github.ref_name }}
+          files: |
+            target/release/Zilum.exe
+            target/release/Zilum.exe.sha256

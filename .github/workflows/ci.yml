@@ -1,0 +1,49 @@
+# Checks every push and pull request on a hosted Windows runner:
+# formatting, clippy, the unit tests and a release build. The built exe
+# is kept as a run artifact so every commit yields a downloadable build.
+#
+# The desktop checks (verify-zilum) need a real desktop and are not run here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Zilum-${{ github.sha }}
+          path: target/release/Zilum.exe
+          if-no-files-found: error
