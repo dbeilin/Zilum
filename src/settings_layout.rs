@@ -1,6 +1,6 @@
 //! Where everything in the Settings window goes, and how the keyboard moves through it: four
 //! groups in one column under a title row, each row a label and a control, every field with room
-//! under it for a message, and the version centred at the bottom.
+//! under it for a message, and the version centred at the bottom, a link to the releases.
 
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
@@ -46,6 +46,8 @@ const STATE_GAP: f32 = 12.0;
 /// Between the last row's gap and the version's line, and that line.
 const ABOVE_VERSION: f32 = 8.0;
 const VERSION_HEIGHT: f32 = LINE_HEIGHT;
+/// Each side of the version's text that is still the link.
+const LINK_PAD: f32 = 4.0;
 /// Below the version's line.
 const BOTTOM: f32 = 12.0;
 
@@ -69,10 +71,12 @@ pub enum Stop {
     /// The window background's tiles.
     Background,
     StartWithWindows,
+    /// The version at the bottom, which opens the releases page.
+    Version,
 }
 
 /// Every stop, in the order Tab moves through them.
-pub const STOPS: [Stop; 9] = [
+pub const STOPS: [Stop; 10] = [
     Stop::Hotkey(Mode::Capture),
     Stop::Hotkey(Mode::Screen),
     Stop::Hotkey(Mode::Window),
@@ -82,6 +86,7 @@ pub const STOPS: [Stop; 9] = [
     Stop::Theme,
     Stop::Background,
     Stop::StartWithWindows,
+    Stop::Version,
 ];
 
 /// Where Tab goes from `from`, or Shift+Tab when `back`, round from the last stop to the first.
@@ -113,6 +118,8 @@ pub enum Space {
     Background(Background),
     /// Turns Start with Windows on or off.
     StartWithWindows(bool),
+    /// Opens the releases page, as clicking the version does.
+    Version,
 }
 
 /// What Space does on `stop`, with `theme` and `background` chosen and Start with Windows `on` or
@@ -133,6 +140,7 @@ pub fn space(stop: Stop, theme: Theme, background: Background, on: bool) -> Spac
             Space::Background(all[(at + 1) % all.len()])
         }
         Stop::StartWithWindows => Space::StartWithWindows(!on),
+        Stop::Version => Space::Version,
     }
 }
 
@@ -149,6 +157,8 @@ pub enum Target {
     /// A window background's tile, its picture or its name.
     Background(Background),
     StartWithWindows,
+    /// The version at the bottom, a link to the releases page.
+    Version,
 }
 
 /// The window laid out at one scale, in physical pixels of its client area.
@@ -181,7 +191,7 @@ pub struct Layout {
     pub toggle: D2D_RECT_F,
     pub toggle_state: D2D_RECT_F,
     /// The line at the bottom that says which version this is, the window's whole width, so
-    /// the version centres in the window.
+    /// the version centres in the window, until `fit_version` narrows it to the text.
     pub version: D2D_RECT_F,
 }
 
@@ -352,7 +362,19 @@ impl Layout {
             bottom: self.toggle_state.bottom,
             ..self.toggle
         };
-        inside(&switch).then_some(Target::StartWithWindows)
+        if inside(&switch) {
+            return Some(Target::StartWithWindows);
+        }
+        inside(&self.version).then_some(Target::Version)
+    }
+
+    /// Narrows the version's line to text `width` wide, centred in the window on whole pixels as
+    /// the text is drawn, with a little room each side, so only the text is a link.
+    pub fn fit_version(&mut self, width: f32, scale: f32) {
+        let left = ((self.width as f32 - width) / 2.0).round() - (LINK_PAD * scale).round();
+        self.version.left = left.max(0.0);
+        self.version.right =
+            (left + width.ceil() + 2.0 * (LINK_PAD * scale).round()).min(self.width as f32);
     }
 }
 
@@ -396,6 +418,22 @@ mod tests {
         // A longer message moves it down with everything else.
         let moved = Layout::new(1.0, [1, 3, 1, 1, 1]);
         assert_eq!(edges(moved.version), [0.0, 732.0, 520.0, 748.0]);
+    }
+
+    #[test]
+    fn only_the_version_s_text_and_a_little_room_each_side_is_the_link() {
+        let mut layout = Layout::new(1.0, [1; 5]);
+        layout.fit_version(80.0, 1.0);
+        // 220 to 300 is the text, centred in 520; 4 more each side.
+        assert_eq!(edges(layout.version), [216.0, 700.0, 304.0, 716.0]);
+        assert_eq!(layout.hit((216.0, 708.0)), Some(Target::Version));
+        assert_eq!(layout.hit((303.0, 715.0)), Some(Target::Version));
+        assert_eq!(layout.hit((215.0, 708.0)), None);
+        assert_eq!(layout.hit((304.0, 708.0)), None);
+        assert_eq!(layout.hit((260.0, 699.0)), None);
+        let mut large = Layout::new(1.5, [1; 5]);
+        large.fit_version(120.0, 1.5);
+        assert_eq!(edges(large.version), [324.0, 1050.0, 456.0, 1074.0]);
     }
 
     #[test]
@@ -583,10 +621,11 @@ mod tests {
     }
 
     #[test]
-    fn tab_goes_from_each_hotkey_field_to_the_folder_browse_the_theme_the_tiles_and_the_toggle() {
+    fn tab_goes_through_the_hotkey_fields_the_folder_browse_the_theme_the_tiles_the_toggle_and_the_version()
+     {
         let mut at = next(None, false);
         let mut visited = vec![at];
-        for _ in 0..9 {
+        for _ in 0..10 {
             at = next(Some(at), false);
             visited.push(at);
         }
@@ -602,6 +641,7 @@ mod tests {
                 Stop::Theme,
                 Stop::Background,
                 Stop::StartWithWindows,
+                Stop::Version,
                 Stop::Hotkey(Mode::Capture),
             ]
         );
@@ -609,14 +649,12 @@ mod tests {
 
     #[test]
     fn shift_tab_goes_back_the_same_way() {
-        assert_eq!(next(None, true), Stop::StartWithWindows);
+        assert_eq!(next(None, true), Stop::Version);
+        assert_eq!(next(Some(Stop::Version), true), Stop::StartWithWindows);
         assert_eq!(next(Some(Stop::Folder), true), Stop::Hotkey(Mode::CopyText));
         assert_eq!(next(Some(Stop::Theme), true), Stop::Browse);
         assert_eq!(next(Some(Stop::StartWithWindows), true), Stop::Background);
-        assert_eq!(
-            next(Some(Stop::Hotkey(Mode::Capture)), true),
-            Stop::StartWithWindows
-        );
+        assert_eq!(next(Some(Stop::Hotkey(Mode::Capture)), true), Stop::Version);
     }
 
     /// What Space does on `stop` with Trim shadow chosen.
@@ -643,6 +681,10 @@ mod tests {
     #[test]
     fn space_presses_browse_moves_the_theme_on_flips_the_toggle_and_listens_in_a_hotkey_field() {
         assert_eq!(space_at(Stop::Browse, Theme::System, false), Space::Browse);
+        assert_eq!(
+            space_at(Stop::Version, Theme::System, false),
+            Space::Version
+        );
         assert_eq!(
             space_at(Stop::Theme, Theme::System, false),
             Space::Theme(Theme::Light)

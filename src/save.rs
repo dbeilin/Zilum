@@ -359,6 +359,23 @@ pub fn open_folder() {
     });
 }
 
+/// Opens `url` in the default browser.
+pub fn open_url(url: &'static str) {
+    in_shell(move || {
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+        let _ = unsafe {
+            ShellExecuteW(
+                None,
+                w!("open"),
+                &HSTRING::from(url),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            )
+        };
+    });
+}
+
 /// Runs `f` on a thread of its own, since Explorer and the save dialog can take a while, in the
 /// single-threaded apartment the shell's extensions expect.
 fn in_shell(f: impl FnOnce() + Send + 'static) {

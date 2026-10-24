@@ -19,7 +19,7 @@ use windows::{
                 D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET,
                 D2D1_BITMAP_PROPERTIES1, D2D1_DEVICE_CONTEXT_OPTIONS_NONE, ID2D1DeviceContext,
             },
-            DirectWrite::IDWriteTextLayout,
+            DirectWrite::{DWRITE_TEXT_RANGE, IDWriteTextLayout},
             Dxgi::{
                 Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN},
                 DXGI_PRESENT, DXGI_SWAP_CHAIN_FLAG, IDXGISurface, IDXGISwapChain1,
@@ -45,17 +45,18 @@ use windows::{
             WindowsAndMessaging::{
                 CallNextHookEx, CreateWindowExW, ES_AUTOHSCROLL, GetCursorPos, GetDlgItem,
                 GetForegroundWindow, GetWindowTextLengthW, GetWindowTextW, HC_ACTION, HHOOK, HMENU,
-                HTCAPTION, HTCLIENT, HTNOWHERE, IDC_ARROW, IsChild, KBDLLHOOKSTRUCT, LoadCursorW,
-                MSG, RegisterClassExW, SC_KEYMENU, SM_CXICON, SM_CXSMICON, SW_SHOW, SWP_NOACTIVATE,
-                SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow,
-                SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow, UnhookWindowsHookEx,
-                WA_INACTIVE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WINDOWPOS, WM_ACTIVATE,
-                WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DPICHANGED,
-                WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-                WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN,
-                WM_PAINT, WM_RBUTTONDOWN, WM_SETFONT, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP,
-                WM_WINDOWPOSCHANGING, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
-                WS_POPUP, WS_SYSMENU, WS_THICKFRAME, WS_VISIBLE,
+                HTCAPTION, HTCLIENT, HTNOWHERE, IDC_ARROW, IDC_HAND, IsChild, KBDLLHOOKSTRUCT,
+                LoadCursorW, MSG, RegisterClassExW, SC_KEYMENU, SM_CXICON, SM_CXSMICON, SW_SHOW,
+                SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetCursor,
+                SetForegroundWindow, SetWindowPos, SetWindowTextW, SetWindowsHookExW, ShowWindow,
+                UnhookWindowsHookEx, WA_INACTIVE, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE,
+                WINDOWPOS, WM_ACTIVATE, WM_APP, WM_CAPTURECHANGED, WM_CLOSE, WM_CTLCOLOREDIT,
+                WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST,
+                WM_NCLBUTTONDBLCLK, WM_NCLBUTTONDOWN, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR,
+                WM_SETFONT, WM_SYSCOMMAND, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_WINDOWPOSCHANGING,
+                WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW, WS_POPUP, WS_SYSMENU,
+                WS_THICKFRAME, WS_VISIBLE,
             },
         },
     },
@@ -103,6 +104,9 @@ const STYLE: WINDOW_STYLE =
 const TITLE: &str = "Zilum Settings";
 /// The version the release bumps in Cargo.toml.
 const VERSION: &str = concat!("Version ", env!("CARGO_PKG_VERSION"));
+/// Where the version leads: every release, so a newer one is there to see. Opening it in the
+/// browser is the only way Zilum points at the network; the exe itself makes no request.
+const RELEASES: &str = "https://github.com/dbeilin/Zilum/releases";
 const HEADINGS: [&str; 4] = ["Hotkeys", "Saving", "Appearance", "Startup"];
 /// Each row's name, in the order of `Layout::labels`.
 const LABELS: [&str; 8] = [
@@ -497,6 +501,7 @@ impl State {
             field_line: 0,
         };
         state.make_fonts();
+        state.fit_version()?;
         state.place_controls();
         set_text(
             control(hwnd, ID_FOLDER),
@@ -588,6 +593,7 @@ impl State {
         let layout = Layout::new(scale, lines);
         let resized = (layout.width, layout.height) != (self.layout.width, self.layout.height);
         self.layout = layout;
+        self.fit_version()?;
         if resized {
             let (width, height) = window_size(&self.layout, self.dpi)?;
             // SAFETY: Win32 and Direct3D calls on live handles, interfaces and locals.
@@ -612,6 +618,13 @@ impl State {
         }
         self.place_controls();
         self.present()
+    }
+
+    /// Narrows the version's line to its text, so only the text is the link.
+    fn fit_version(&mut self) -> Result<()> {
+        let width = bar::size(&self.text.tip(VERSION)?)?.X;
+        self.layout.fit_version(width, scale(self.dpi));
+        Ok(())
     }
 
     /// Lays the window out again at `dpi`, at its new size, with its top-left corner at `at`, where
@@ -801,7 +814,21 @@ impl State {
         );
         let state = text.label(if on { "On" } else { "Off" })?;
         self.beside(&state, &layout.toggle_state, Tone::Text)?;
-        paint.centred(&text.tip(VERSION)?, &layout.version, Tone::Secondary)?;
+        // A link: secondary until the pointer is on it, then underlined in the text's colour.
+        let version = text.tip(VERSION)?;
+        let tone = match self.tint(Target::Version) {
+            Some(_) => {
+                let all = DWRITE_TEXT_RANGE {
+                    startPosition: 0,
+                    length: VERSION.encode_utf16().count() as u32,
+                };
+                // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
+                unsafe { version.SetUnderline(true, all)? };
+                Tone::Text
+            }
+            None => Tone::Secondary,
+        };
+        paint.centred(&version, &layout.version, tone)?;
 
         let focused = match self.focus.filter(|_| self.ring) {
             Some(Stop::Hotkey(mode)) => Some((layout.hotkeys[mode as usize], radius)),
@@ -821,6 +848,7 @@ impl State {
                 let half = (layout.toggle.bottom - layout.toggle.top) / 2.0;
                 Some((layout.toggle, half))
             }
+            Some(Stop::Version) => Some((layout.version, radius)),
             None => None,
         };
         if let Some((area, radius)) = focused {
@@ -913,11 +941,12 @@ impl State {
         }
     }
 
-    /// Enter: takes what the folder field holds, or presses Browse.
+    /// Enter: takes what the folder field holds, presses Browse, or opens the releases page.
     fn enter(&mut self) {
         match self.focus {
             Some(Stop::Folder) => self.take_folder(),
             Some(Stop::Browse) => self.browse(),
+            Some(Stop::Version) => save::open_url(RELEASES),
             _ => {}
         }
     }
@@ -940,6 +969,7 @@ impl State {
             Space::Theme(theme) => self.choose_theme(theme),
             Space::Background(background) => self.choose_background(background),
             Space::StartWithWindows(on) => self.start_with_windows(on),
+            Space::Version => save::open_url(RELEASES),
         }
         true
     }
@@ -956,6 +986,7 @@ impl State {
             Target::StartWithWindows => {
                 self.start_with_windows(!settings::current().start_with_windows)
             }
+            Target::Version => save::open_url(RELEASES),
         }
     }
 
@@ -1220,6 +1251,21 @@ unsafe extern "system" fn window_proc(
                 with(|state| state.take_pressed(typed));
             }
         }
+        // The hand over the version, as over any link; the class's arrow everywhere else.
+        WM_SETCURSOR if (lparam.0 & 0xFFFF) as u32 == HTCLIENT && wparam.0 == hwnd.0 as usize => {
+            let mut at = POINT::default();
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+            let _ = unsafe { GetCursorPos(&mut at) };
+            let at = win32::to_client(hwnd, at);
+            let on_link =
+                with(|state| state.layout.hit((at.x as f32, at.y as f32)) == Some(Target::Version));
+            if on_link != Some(true) {
+                return win32::default_proc(hwnd, msg, wparam, lparam);
+            }
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+            unsafe { SetCursor(LoadCursorW(None, IDC_HAND).ok()) };
+            return LRESULT(1);
+        }
         WM_FOCUS_MOVED => {
             with(State::focus_moved);
         }
@@ -1258,6 +1304,7 @@ unsafe extern "system" fn window_proc(
                     Some(Target::Theme(_)) => (Some(Stop::Theme), false),
                     Some(Target::Background(_)) => (Some(Stop::Background), false),
                     Some(Target::StartWithWindows) => (Some(Stop::StartWithWindows), false),
+                    Some(Target::Version) => (Some(Stop::Version), false),
                     None => (None, false),
                 };
                 state.ring = false;
