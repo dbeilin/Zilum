@@ -1,0 +1,81 @@
+# Run by hand from the Actions tab. Raises the version in Cargo.toml and
+# Cargo.lock on a release branch and opens a pull request for it, with the
+# commits since the last release as draft notes. The PR description becomes
+# the release notes; merging it publishes the release (release.yml).
+#
+# Every action is pinned to a full commit SHA, its version in the comment.
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to raise
+        type: choice
+        options: [patch, minor, major]
+        default: minor
+
+permissions: {}
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Open the release PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the release branch
+      pull-requests: write # open the release PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0 # the tags and commits since the last release
+          persist-credentials: true # the push below; no third-party code runs here
+
+      - name: Raise the version
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          current=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          IFS=. read -r major minor patch <<< "$current"
+          case "$BUMP" in
+            major) next="$((major + 1)).0.0" ;;
+            minor) next="$major.$((minor + 1)).0" ;;
+            patch) next="$major.$minor.$((patch + 1))" ;;
+          esac
+          if git rev-parse -q --verify "refs/tags/v$next" > /dev/null; then
+            echo "::error::v$next is already tagged"
+            exit 1
+          fi
+          sed -i "0,/^version = \"$current\"$/s//version = \"$next\"/" Cargo.toml
+          sed -i "/^name = \"zilum\"$/{n;s/^version = \"$current\"$/version = \"$next\"/}" Cargo.lock
+          git diff --stat
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Draft the notes
+        run: |
+          last=$(git describe --tags --abbrev=0 --match 'v*' 2> /dev/null || true)
+          {
+            echo "<!-- These notes become the release notes. Edit them, then merge to publish. -->"
+            echo
+            git log --no-merges --format='- %s' ${last:+"$last"..HEAD}
+          } > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Open the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          branch="release/v$VERSION"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git commit -am "Release v$VERSION"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --title "Release v$VERSION" --body-file "$RUNNER_TEMP/notes.md"

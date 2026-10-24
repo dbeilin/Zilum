@@ -1,28 +1,63 @@
-# Builds the release exe for a version tag and attaches it to a draft
-# GitHub Release. The draft is published by hand after the downloaded exe
-# has passed the desktop checks (verify-zilum); publishing makes the
-# release immutable.
+# Publishes a release when the version in Cargo.toml on main has no
+# release yet: normally the merge of a PR from prepare-release.yml, whose
+# description becomes the release notes. Publishing makes the release
+# immutable.
 #
-# Two jobs, so the write token never shares a job with the compiler:
+# Three jobs, so the write token never shares a job with the compiler:
+# - check: reads the version and whether it is released already.
 # - build: read-only, no cache, the toolchain pinned in rust-toolchain.toml.
-# - publish: waits for approval on the release environment, attests the exe
-#   and drafts the release with gh. It runs no third-party code.
+# - publish: on the release environment (main only), attests the exe, tags
+#   the commit and publishes with gh. It runs no third-party code.
 #
 # Every action is pinned to a full commit SHA, its version in the comment.
 name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: ['Cargo.toml']
 
 permissions: {}
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 jobs:
+  check:
+    name: Check for a new version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      new: ${{ steps.version.outputs.new }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if gh release view "v$version" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "v$version is released already"
+            new=false
+          else
+            echo "v$version is new"
+            new=true
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+
   build:
+    name: Build the exe
+    needs: check
+    if: needs.check.outputs.new == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -35,13 +70,8 @@ jobs:
       - name: Install toolchain
         run: rustup toolchain install
 
-      - name: Tag matches Cargo.toml
-        shell: pwsh
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          $version = (cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json).packages[0].version
-          if ($env:TAG -ne "v$version") { throw "Tag $env:TAG does not match Cargo.toml version $version" }
+      - name: Test
+        run: cargo test --locked
 
       - name: Build release
         run: cargo build --release --locked
@@ -53,12 +83,14 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: build
+    name: Publish the release
+    needs: [check, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: release
     permissions:
-      contents: write # draft the release and upload the exe
+      contents: write # tag the commit, publish the release and upload the exe
+      pull-requests: read # the merged release PR's description
       id-token: write # sign the attestation
       attestations: write # store the attestation
     steps:
@@ -71,13 +103,20 @@ jobs:
         with:
           subject-path: dist/Zilum.exe
 
-      - name: Draft release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: >-
-          gh release create "$TAG" dist/Zilum.exe
-          --repo "$GITHUB_REPOSITORY"
-          --draft --verify-tag
-          --title "Zilum $TAG"
-          --generate-notes
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0].body // ""' > "$RUNNER_TEMP/notes.md"
+          if grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            notes=(--notes-file "$RUNNER_TEMP/notes.md")
+          else
+            notes=(--generate-notes)
+          fi
+          gh release create "v$VERSION" dist/Zilum.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Zilum v$VERSION" \
+            --latest \
+            "${notes[@]}"
