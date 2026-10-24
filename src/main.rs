@@ -16,6 +16,7 @@ mod graphics;
 mod history;
 mod hotkey;
 mod image;
+mod instance;
 mod lifetime;
 mod notice;
 mod overlay;
@@ -67,15 +68,15 @@ use windows::{
             },
             WindowsAndMessaging::{
                 AppendMenuW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DestroyMenu,
-                DispatchMessageW, FindWindowW, GetForegroundWindow, GetMessageW, HICON, IMAGE_ICON,
+                DispatchMessageW, GetForegroundWindow, GetMessageW, HICON, IMAGE_ICON,
                 LR_DEFAULTCOLOR, LoadImageW, MF_SEPARATOR, MF_STRING, MSG, MSGF_MENU, PM_REMOVE,
                 PeekMessageW, PostQuitMessage, RegisterClassW, SM_CXSMICON, SPI_GETSELECTIONFADE,
                 SPI_GETUIEFFECTS, SYSTEM_METRICS_INDEX, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
                 SetForegroundWindow, SetWindowsHookExW, SystemParametersInfoW, TPM_RETURNCMD,
                 TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx,
-                WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION,
-                WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION, WM_QUIT, WM_TIMER, WNDCLASSW,
-                WS_OVERLAPPED,
+                WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY,
+                WM_ENDSESSION, WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION, WM_QUIT, WM_TIMER,
+                WNDCLASSW, WS_OVERLAPPED,
             },
         },
     },
@@ -89,7 +90,6 @@ use crate::{
 
 const TRAY_ID: u32 = 1;
 const WM_TRAY: u32 = WM_APP;
-const WM_ALREADY_RUNNING: u32 = WM_APP + 1;
 const ID_CAPTURE: usize = 1;
 const ID_OPEN_SAVE_FOLDER: usize = 2;
 const ID_QUIT: usize = 3;
@@ -128,9 +128,11 @@ fn main() -> Result<()> {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
 
-        let _single_instance = CreateMutexW(None, true, w!(r"Local\Zilum"))?;
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            tell_running_copy();
+        // A newer copy opened while an older one runs closes it and starts in its place, so
+        // updating is opening the new exe. Any other copy leaves the running one as it is.
+        let single_instance = CreateMutexW(None, true, w!(r"Local\Zilum"))?;
+        let took_over = GetLastError() == ERROR_ALREADY_EXISTS;
+        if took_over && !instance::arrive(single_instance) {
             return Ok(());
         }
 
@@ -184,7 +186,10 @@ fn main() -> Result<()> {
         // A start the user made says Zilum is there, as it has no window. Any problem below
         // follows and replaces it. A start at sign-in says nothing.
         if !startup::at_sign_in() {
-            notify(hwnd, &running(settings.hotkeys[Mode::Capture as usize]));
+            notify(
+                hwnd,
+                &running(settings.hotkeys[Mode::Capture as usize], took_over),
+            );
         }
         if invalid {
             notify(hwnd, "Some settings were invalid and reset");
@@ -232,18 +237,6 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The running copy may still be creating its window, so look for it for about a second.
-fn tell_running_copy() {
-    for _ in 0..20 {
-        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
-        if let Ok(hwnd) = unsafe { FindWindowW(w!("Zilum.Tray"), None) } {
-            win32::post(hwnd, WM_ALREADY_RUNNING, WPARAM(0), LPARAM(0));
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
 }
 
 unsafe extern "system" fn window_proc(
@@ -311,8 +304,17 @@ unsafe extern "system" fn window_proc(
             copy_text::finished(msg, wparam);
             LRESULT(0)
         }
-        WM_ALREADY_RUNNING => {
-            notify(hwnd, "Zilum is already running");
+        instance::WM_COPY_LEFT => {
+            notify(
+                hwnd,
+                instance::left_message(instance::VERSION, wparam.0 as u32),
+            );
+            LRESULT(0)
+        }
+        instance::WM_VERSION => LRESULT(instance::VERSION as isize),
+        // A newer copy closes this one so, to start in its place.
+        WM_CLOSE => {
+            win32::destroy(hwnd);
             LRESULT(0)
         }
         WM_QUERYENDSESSION => LRESULT(1),
@@ -769,11 +771,21 @@ fn load_icon(metric: SYSTEM_METRICS_INDEX) -> Result<HICON> {
     }
 }
 
-/// What a start the user made says, naming the capture hotkey if there is one.
-fn running(capture: Option<Hotkey>) -> String {
+/// What a start the user made says, naming the capture hotkey if there is one: that Zilum is
+/// in the tray, or that it is the new version when it took over from an older copy.
+fn running(capture: Option<Hotkey>, took_over: bool) -> String {
+    let start = if took_over {
+        concat!(
+            "Zilum is updated to version ",
+            env!("CARGO_PKG_VERSION"),
+            "."
+        )
+    } else {
+        "Zilum is running in the tray."
+    };
     match capture {
-        Some(hotkey) => format!("Zilum is running in the tray. Press {hotkey} to capture."),
-        None => "Zilum is running in the tray.".into(),
+        Some(hotkey) => format!("{start} Press {hotkey} to capture."),
+        None => start.into(),
     }
 }
 

@@ -63,6 +63,7 @@ Zilum works offline and collects nothing. The exe contains no networking code, s
 1. Download [`Zilum.exe`](https://github.com/dbeilin/Zilum/releases/latest/download/Zilum.exe) from the latest release and run it. Zilum lives in the tray.
 2. The exe is not code-signed yet, so SmartScreen may stop it the first time: choose **More info**, then **Run anyway**. Each release lists the exe's SHA-256 next to it.
 3. To have Zilum running after a restart, turn on **Start with Windows** in its Settings.
+4. To update, download the new `Zilum.exe` and run it. It closes the older copy that is running and takes its place.
 
 > [!NOTE]
 > If PrintScreen still opens the Snipping Tool, turn off **Use the Print screen key to open screen capture** in Windows Settings › Accessibility › Keyboard.
