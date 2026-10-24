@@ -66,28 +66,26 @@ use windows::{
                 Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
-                AppendMenuW, CallNextHookEx, CreateIconFromResourceEx, CreatePopupMenu,
-                CreateWindowExW, DestroyMenu, DispatchMessageW, FindWindowW, GetForegroundWindow,
-                GetMessageW, HICON, LR_DEFAULTCOLOR, MF_SEPARATOR, MF_STRING, MSG, MSGF_MENU,
-                PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SM_CXSMICON,
-                SPI_GETSELECTIONFADE, SPI_GETUIEFFECTS, SYSTEM_METRICS_INDEX,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetForegroundWindow, SetWindowsHookExW,
-                SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-                TranslateMessage, UnhookWindowsHookEx, WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP,
-                WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION,
-                WM_QUIT, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+                AppendMenuW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DestroyMenu,
+                DispatchMessageW, FindWindowW, GetForegroundWindow, GetMessageW, HICON, IMAGE_ICON,
+                LR_DEFAULTCOLOR, LoadImageW, MF_SEPARATOR, MF_STRING, MSG, MSGF_MENU, PM_REMOVE,
+                PeekMessageW, PostQuitMessage, RegisterClassW, SM_CXSMICON, SPI_GETSELECTIONFADE,
+                SPI_GETUIEFFECTS, SYSTEM_METRICS_INDEX, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+                SetForegroundWindow, SetWindowsHookExW, SystemParametersInfoW, TPM_RETURNCMD,
+                TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx,
+                WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION,
+                WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION, WM_QUIT, WM_TIMER, WNDCLASSW,
+                WS_OVERLAPPED,
             },
         },
     },
-    core::{BOOL, Result, w},
+    core::{BOOL, PCWSTR, Result, w},
 };
 
 use crate::{
     hotkey::{Hotkey, Mode, Refusal, in_use},
     selection::Selection,
 };
-
-const ICON_PNG: &[u8] = include_bytes!("../assets/icon.png");
 
 const TRAY_ID: u32 = 1;
 const WM_TRAY: u32 = WM_APP;
@@ -746,12 +744,23 @@ fn add_tray_icon(hwnd: HWND) -> Result<()> {
     Ok(())
 }
 
-/// The Zilum icon at the size the system metric `metric` gives.
+/// The Zilum icon at the size the system metric `metric` gives, from the exe's own icon, which
+/// the build script embeds as resource 1.
 fn load_icon(metric: SYSTEM_METRICS_INDEX) -> Result<HICON> {
-    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals; resource 1 is a
+    // name the call reads as an integer ID.
     unsafe {
         let size = GetSystemMetricsForDpi(metric, GetDpiForSystem());
-        CreateIconFromResourceEx(ICON_PNG, true, 0x0003_0000, size, size, LR_DEFAULTCOLOR)
+        let instance = GetModuleHandleW(None)?;
+        let icon = LoadImageW(
+            Some(instance.into()),
+            PCWSTR(1 as _),
+            IMAGE_ICON,
+            size,
+            size,
+            LR_DEFAULTCOLOR,
+        )?;
+        Ok(HICON(icon.0))
     }
 }
 
