@@ -10,6 +10,9 @@ name = "Zilum"
 path = "src/main.rs"
 
 [dependencies]
+color_quant = "1.1"
+# The palette is chosen with color_quant directly, so the gif crate's own use of it is left out.
+gif = { version = "0.14.2", default-features = false, features = ["std"] }
 png = "0.18.1"
 windows-numerics = "0.3"
 

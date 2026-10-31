@@ -863,7 +863,7 @@ fn capture(release: Release) {
             Taking::Region(selection) => Chosen::Region(selection),
             Taking::Window(_, window) => Chosen::Window(window),
         };
-        record::arm(release.shown_on, chosen, release.previous);
+        record::arm(release.shown_on, chosen, release.previous, release.tray);
         return;
     }
     match release.taking {

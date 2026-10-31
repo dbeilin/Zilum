@@ -23,6 +23,7 @@ mod overlay;
 mod picker;
 mod pixels;
 mod record;
+mod recording;
 mod save;
 mod selection;
 mod settings;

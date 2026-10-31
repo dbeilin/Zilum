@@ -1,13 +1,14 @@
-//! Choosing the current screen and grabbing one frame of it, or of a window, with Windows
-//! Graphics Capture, kept on the GPU.
+//! Choosing the current screen and grabbing one frame of it, or of a window, or a stream of a
+//! screen's frames for a recording, with Windows Graphics Capture, kept on the GPU.
 
 use std::time::{Duration, Instant};
 
 use windows::{
+    Foundation::TimeSpan,
     Graphics::{
         Capture::{
-            Direct3D11CaptureFramePool, GraphicsCaptureAccess, GraphicsCaptureAccessKind,
-            GraphicsCaptureItem, GraphicsCaptureSession,
+            Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureAccess,
+            GraphicsCaptureAccessKind, GraphicsCaptureItem, GraphicsCaptureSession,
         },
         DirectX::DirectXPixelFormat,
     },
@@ -181,6 +182,90 @@ impl Drop for Grab {
     fn drop(&mut self) {
         // Closing can return an error object whose code is success, so the result is not
         // worth reporting. Closing on failure too stops the capture (and its border).
+        let _ = self.session.Close();
+        let _ = self.pool.Close();
+    }
+}
+
+/// A screen's capture that keeps running, with the pointer in it, for a recording. It holds the
+/// newest frame until a newer one comes. Dropping it stops the capture.
+pub struct Stream {
+    pool: Direct3D11CaptureFramePool,
+    session: GraphicsCaptureSession,
+    newest: Option<Direct3D11CaptureFrame>,
+}
+
+impl Stream {
+    /// Starts capturing `monitor` on this thread's graphics device, the one `pixels::read` uses
+    /// on this thread, at no more than `interval` between frames where Windows can be told so.
+    pub fn start(monitor: HMONITOR, interval: Duration) -> Result<Stream> {
+        let graphics = graphics::get()?;
+        let item = screen_item(monitor)?;
+        // Two buffers: one held as the newest frame, and one for Windows to put the next in.
+        let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+            &graphics.winrt_device,
+            DirectXPixelFormat::R16G16B16A16Float,
+            2,
+            item.Size()?,
+        )?;
+        let stream = Stream {
+            session: pool.CreateCaptureSession(&item)?,
+            pool,
+            newest: None,
+        };
+        // The pointer is part of a recording, as it is not of a still.
+        stream.session.SetIsCursorCaptureEnabled(true)?;
+        let _ = stream.session.SetIsBorderRequired(false);
+        // Only on recent builds; elsewhere frames come as often as the screen changes.
+        let _ = stream.session.SetMinUpdateInterval(TimeSpan {
+            Duration: (interval.as_nanos() / 100) as i64,
+        });
+        stream.session.StartCapture()?;
+        Ok(stream)
+    }
+
+    /// Takes in the frames that came since the last call, keeping only the newest, and says
+    /// whether any came.
+    pub fn refresh(&mut self) -> Result<bool> {
+        let mut came = false;
+        loop {
+            match self.pool.TryGetNextFrame() {
+                Ok(frame) => {
+                    // Closed now, so its buffer goes back to Windows at once.
+                    if let Some(older) = self.newest.replace(frame) {
+                        let _ = older.Close();
+                    }
+                    came = true;
+                }
+                // An empty pool is reported as a success code wrapped in an error.
+                Err(error) if error.code().is_ok() => return Ok(came),
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// The newest frame, as long as it is held, in the frame's 16-bit float format. None before
+    /// the first one comes.
+    pub fn frame(&self) -> Result<Option<ID3D11Texture2D>> {
+        let Some(frame) = &self.newest else {
+            return Ok(None);
+        };
+        // SAFETY: A COM call on a live interface.
+        let texture = unsafe {
+            frame
+                .Surface()?
+                .cast::<IDirect3DDxgiInterfaceAccess>()?
+                .GetInterface()?
+        };
+        Ok(Some(texture))
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        if let Some(frame) = self.newest.take() {
+            let _ = frame.Close();
+        }
         let _ = self.session.Close();
         let _ = self.pool.Close();
     }

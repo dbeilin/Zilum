@@ -1,5 +1,6 @@
 //! Saving a capture as a PNG in the save folder or where the user chooses, from a worker thread
-//! so encoding and the disk never hold up the UI, and opening the save folder in Explorer.
+//! so encoding and the disk never hold up the UI, and opening the save folder in Explorer. A
+//! recording's GIF takes its name and its place in the save folder from here too.
 
 use std::{
     fs::{self, File},
@@ -61,6 +62,11 @@ impl Job {
     }
 }
 
+/// The extension of a capture's file.
+pub const PNG: &str = "png";
+/// The extension of a recording's file.
+pub const GIF: &str = "gif";
+
 /// The worker, started by the first save. One thread, so a second save of a capture finds the
 /// file the first one made.
 static WORKER: OnceLock<Sender<Job>> = OnceLock::new();
@@ -115,11 +121,12 @@ pub fn notice_text(file: &Path) -> String {
 fn first_name(image: &Image, target: Option<&Path>) -> String {
     match target.and_then(Path::file_name) {
         Some(name) => name.to_string_lossy().into_owned(),
-        None => names(&image.taken).next().unwrap_or_default(),
+        None => names(&image.taken, PNG).next().unwrap_or_default(),
     }
 }
 
-fn notify_failure(tray: HWND, name: &str) {
+/// Says from `tray` that the file `name` could not be saved.
+pub fn notify_failure(tray: HWND, name: &str) {
     crate::notify(tray, &format!("Couldn't save {name}"));
 }
 
@@ -171,9 +178,21 @@ fn place(
         move_file(temp, target, MOVEFILE_REPLACE_EXISTING)?;
         return Ok(target.to_owned());
     }
+    place_new(temp, folder, taken, PNG, name)
+}
+
+/// Moves `temp` to the first name in `folder` for a file taken at `taken` with `extension` that no
+/// other file has, keeping `name` at the name being tried.
+pub fn place_new(
+    temp: &Path,
+    folder: &Path,
+    taken: &SYSTEMTIME,
+    extension: &str,
+    name: &mut String,
+) -> Result<PathBuf> {
     // Another capture from the same second may have its name, which the move finds out without
     // a gap in which a third could take it.
-    for candidate in names(taken) {
+    for candidate in names(taken, extension) {
         let path = folder.join(&candidate);
         *name = candidate;
         match move_file(temp, &path, MOVE_FILE_FLAGS(0)) {
@@ -199,7 +218,7 @@ fn move_file(from: &Path, to: &Path, flags: MOVE_FILE_FLAGS) -> Result<()> {
 }
 
 /// The save folder as the settings say it is now, created if it is missing.
-fn folder() -> Result<PathBuf> {
+pub fn folder() -> Result<PathBuf> {
     let folder = settings::current().save_folder;
     // Empty only when Windows could not say where Pictures is. A relative path would save
     // somewhere no one looks.
@@ -210,14 +229,16 @@ fn folder() -> Result<PathBuf> {
     Ok(folder)
 }
 
-/// The names a capture taken at `taken`, local time, may be saved under, in the order to try
-/// them: `Zilum 2026-10-16 21.07.33.png`, then `-1`, `-2` and so on.
-fn names(taken: &SYSTEMTIME) -> impl Iterator<Item = String> {
+/// The names a file with `extension` taken at `taken`, local time, may be saved under, in the
+/// order to try them: `Zilum 2026-10-16 21.07.33.png`, then `-1`, `-2` and so on.
+pub fn names(taken: &SYSTEMTIME, extension: &str) -> impl Iterator<Item = String> {
     let stem = format!(
         "Zilum {:04}-{:02}-{:02} {:02}.{:02}.{:02}",
         taken.wYear, taken.wMonth, taken.wDay, taken.wHour, taken.wMinute, taken.wSecond
     );
-    std::iter::once(format!("{stem}.png")).chain((1..).map(move |n| format!("{stem}-{n}.png")))
+    let extension = extension.to_owned();
+    std::iter::once(format!("{stem}.{extension}"))
+        .chain((1..).map(move |n| format!("{stem}-{n}.{extension}")))
 }
 
 /// Asks where to save a capture taken at `taken` with the standard save dialog, owned by the
@@ -295,7 +316,7 @@ fn ask(taken: &SYSTEMTIME, file: Option<&Path>, owner: HWND) -> Result<PathBuf> 
         None => {
             // Made first, so the dialog can start in it.
             let folder = folder().ok();
-            let name = names(taken)
+            let name = names(taken, PNG)
                 .find(|name| {
                     folder
                         .as_ref()
@@ -421,19 +442,32 @@ mod tests {
     #[test]
     fn a_capture_is_named_after_its_local_time() {
         assert_eq!(
-            names(&at(2026, 10, 16, 21, 7, 33)).next().unwrap(),
+            names(&at(2026, 10, 16, 21, 7, 33), PNG).next().unwrap(),
             "Zilum 2026-10-16 21.07.33.png"
         );
         assert_eq!(
-            names(&at(2027, 1, 2, 3, 4, 5)).next().unwrap(),
+            names(&at(2027, 1, 2, 3, 4, 5), PNG).next().unwrap(),
             "Zilum 2027-01-02 03.04.05.png"
+        );
+    }
+
+    #[test]
+    fn a_recording_is_named_as_a_capture_is_but_as_a_gif() {
+        let taken = at(2026, 10, 31, 14, 5, 9);
+        assert_eq!(
+            names(&taken, GIF).take(3).collect::<Vec<_>>(),
+            [
+                "Zilum 2026-10-31 14.05.09.gif",
+                "Zilum 2026-10-31 14.05.09-1.gif",
+                "Zilum 2026-10-31 14.05.09-2.gif",
+            ]
         );
     }
 
     #[test]
     fn a_taken_name_gets_the_next_free_suffix() {
         let taken = at(2026, 10, 16, 21, 7, 33);
-        let free = |owned: &[&str]| names(&taken).find(|name| !owned.contains(&name.as_str()));
+        let free = |owned: &[&str]| names(&taken, PNG).find(|name| !owned.contains(&name.as_str()));
 
         assert_eq!(free(&[]).unwrap(), "Zilum 2026-10-16 21.07.33.png");
         assert_eq!(

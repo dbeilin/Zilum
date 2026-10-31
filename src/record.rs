@@ -1,8 +1,12 @@
 //! Record: the box on the live desktop around the area chosen on the overlay, and the Record pill
-//! beside it. Both are excluded from capture, as a Notice is, so neither is ever in a capture or
-//! in the overlay's frozen picture.
+//! beside it, which starts the recording, shows its clock while it runs, and stops it. Both are
+//! excluded from capture, as a Notice is, so neither is ever in a capture, in the overlay's
+//! frozen picture or in the recording.
 
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    time::{Duration, Instant},
+};
 
 use windows::{
     Win32::{
@@ -14,6 +18,7 @@ use windows::{
             },
             DirectComposition::{
                 IDCompositionDesktopDevice, IDCompositionSurface, IDCompositionTarget,
+                IDCompositionVisual2,
             },
             DirectWrite::IDWriteTextLayout,
             Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute},
@@ -23,7 +28,7 @@ use windows::{
                 GetMonitorInfoW, HBRUSH, HMONITOR, MONITORINFO, RGN_DIFF, RGN_ERROR, SetWindowRgn,
             },
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime},
         UI::{
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{
@@ -31,12 +36,12 @@ use windows::{
             },
             WindowsAndMessaging::{
                 CreateWindowExW, GetForegroundWindow, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA,
-                LoadCursorW, RegisterClassW, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetForegroundWindow,
-                SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos,
-                WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_LBUTTONDOWN,
-                WM_LBUTTONUP, WM_MOUSEMOVE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-                WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-                WS_POPUP,
+                LoadCursorW, RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+                SetForegroundWindow, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
+                SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_KEYDOWN,
+                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
+                WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+                WS_EX_TRANSPARENT, WS_POPUP,
             },
         },
     },
@@ -48,6 +53,8 @@ use crate::{
     annotation::color,
     bar::{self, Paint, Tint, Tone},
     graphics, notice,
+    recording::{self, Outcome, Recorder},
+    save,
     selection::Selection,
     settings,
     theme::{self, Palette},
@@ -74,9 +81,13 @@ const CLOSE_ICON: (char, &str) = ('\u{E8BB}', "\u{00D7}");
 /// Sent when the pointer leaves the pill. Only the `Win32_UI_Controls` feature's headers name
 /// it.
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// The timer that keeps the clock on the pill while it records, and how long after each of the
+/// clock's seconds it fires, so a timer a little early never shows the second before.
+const CLOCK_TIMER: usize = 1;
+const CLOCK_LATE_MS: u32 = 10;
 
 thread_local! {
-    /// The box and its pill while one is armed. There is never a second.
+    /// The box and its pill while one is armed, recording or saving. There is never a second.
     static ARMED: RefCell<Option<Armed>> = const { RefCell::new(None) };
 }
 
@@ -91,29 +102,77 @@ pub enum Chosen {
 /// A box on the live desktop and its pill.
 struct Armed {
     /// The box: one screen, and a rectangle in its physical pixels. Nothing about it is logical.
-    _screen: HMONITOR,
-    _area: Selection,
+    screen: HMONITOR,
+    area: Selection,
     /// The window that draws the box's line, unless all of the line is off the screen.
     line: Option<HWND>,
     pill: Pill,
     /// The window the user was in, which gets the front back when the pill had it.
     previous: Option<HWND>,
+    /// The tray window, which says when the GIF could not be saved.
+    tray: HWND,
+    /// The recording, from the click on Record until Stop.
+    recorder: Option<Recorder>,
 }
 
 /// The Record pill's window, and what it draws.
 struct Pill {
     hwnd: HWND,
     composition: IDCompositionDesktopDevice,
-    /// Puts `surface` in the window. Kept alive with it.
+    /// Puts `visual` in the window. Kept alive with it.
     _target: IDCompositionTarget,
+    /// Shows `surface`, which is made again whenever the pill changes size.
+    visual: IDCompositionVisual2,
     surface: IDCompositionSurface,
-    record: IDWriteTextLayout,
-    close: IDWriteTextLayout,
+    text: bar::Text,
+    stage: Stage,
     scale: f32,
+    /// The box's rectangle on the desktop and its screen's work area, which place the pill.
+    chosen: RECT,
+    work: RECT,
     layout: Layout,
     /// The button the pointer is on, and the one the left button went down on while it is held.
     hover: Option<Button>,
     pressed: Option<Button>,
+}
+
+/// What the pill shows, with its labels.
+enum Stage {
+    /// Record, with its red dot, and ×.
+    Armed {
+        record: IDWriteTextLayout,
+        close: IDWriteTextLayout,
+    },
+    /// The red dot, the time since `started` as `clock` reads it, and Stop.
+    Recording {
+        started: Instant,
+        clock: String,
+        time: IDWriteTextLayout,
+        stop: IDWriteTextLayout,
+    },
+    /// Saving…, while the GIF is written.
+    Saving { saving: IDWriteTextLayout },
+}
+
+impl Stage {
+    /// The label at the pill's start, the one in its trailing button, if it has one, and whether
+    /// the red dot is before the first.
+    fn labels(&self) -> (&IDWriteTextLayout, Option<&IDWriteTextLayout>, bool) {
+        match self {
+            Stage::Armed { record, close } => (record, Some(close), true),
+            Stage::Recording { time, stop, .. } => (time, Some(stop), true),
+            Stage::Saving { saving } => (saving, None, false),
+        }
+    }
+
+    /// The button at the pill's start and its trailing one, where they are buttons.
+    fn buttons(&self) -> (Option<Button>, Option<Button>) {
+        match self {
+            Stage::Armed { .. } => (Some(Button::Record), Some(Button::Close)),
+            Stage::Recording { .. } => (None, Some(Button::Stop)),
+            Stage::Saving { .. } => (None, None),
+        }
+    }
 }
 
 /// A button on the pill.
@@ -121,59 +180,86 @@ struct Pill {
 enum Button {
     Record,
     Close,
+    Stop,
 }
 
-/// Where the pill's buttons are, in physical pixels of its window.
+/// Where the pill's parts are, in physical pixels of its window: its start, which holds the red
+/// dot, if any, and a label, and its trailing button, if it has one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Layout {
     width: i32,
     height: i32,
-    record: D2D_RECT_F,
-    close: D2D_RECT_F,
+    lead: D2D_RECT_F,
+    trail: Option<D2D_RECT_F>,
 }
 
 impl Layout {
-    /// The pill at `scale` with Record's label `label` physical pixels wide: Record, then ×, both
-    /// as tall as the pill less its inset.
-    fn new(label: f32, scale: f32) -> Layout {
+    /// The pill at `scale` with its first label `label` physical pixels wide, after the red dot
+    /// if `dot`, and then a button `trail` physical pixels wide, if any, all as tall as the pill
+    /// less its inset.
+    fn new(label: f32, dot: bool, trail: Option<f32>, scale: f32) -> Layout {
         let px = |logical: f32| (logical * scale).round();
         let (inset, height) = (px(INSET), px(HEIGHT));
-        let record_right = inset + px(PADDING) + px(DOT) + px(DOT_GAP) + label.ceil() + px(PADDING);
-        let close_left = record_right + px(BETWEEN);
-        let close_right = close_left + px(CLOSE_WIDTH);
+        let dot = if dot { px(DOT) + px(DOT_GAP) } else { 0.0 };
+        let lead_right = inset + px(PADDING) + dot + label.ceil() + px(PADDING);
         let (top, bottom) = (inset, height - inset);
+        let trail = trail.map(|width| {
+            let left = lead_right + px(BETWEEN);
+            D2D_RECT_F {
+                left,
+                top,
+                right: left + width,
+                bottom,
+            }
+        });
         Layout {
-            width: (close_right + inset) as i32,
+            width: (trail.map_or(lead_right, |trail| trail.right) + inset) as i32,
             height: height as i32,
-            record: D2D_RECT_F {
+            lead: D2D_RECT_F {
                 left: inset,
                 top,
-                right: record_right,
+                right: lead_right,
                 bottom,
             },
-            close: D2D_RECT_F {
-                left: close_left,
-                top,
-                right: close_right,
-                bottom,
-            },
+            trail,
         }
     }
 
-    /// The button at `at`, a client point, if any.
-    fn hit(&self, at: POINT) -> Option<Button> {
+    /// The pill's layout at `scale` for what `stage` shows.
+    fn of(stage: &Stage, scale: f32) -> Result<Layout> {
+        let px = |logical: f32| (logical * scale).round();
+        let (label, trail, dot) = stage.labels();
+        let trail = match stage {
+            Stage::Armed { .. } => Some(px(CLOSE_WIDTH)),
+            _ => trail
+                .map(|trail| Ok::<_, Error>(px(PADDING) + bar::size(trail)?.X.ceil() + px(PADDING)))
+                .transpose()?,
+        };
+        Ok(Layout::new(bar::size(label)?.X, dot, trail, scale))
+    }
+
+    /// The button at `at`, a client point, if any, of the pill's `buttons`, its start's and its
+    /// trailing one's.
+    fn hit(&self, at: POINT, buttons: (Option<Button>, Option<Button>)) -> Option<Button> {
         let (x, y) = (at.x as f32, at.y as f32);
         let inside = |rect: &D2D_RECT_F| {
             x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
         };
-        if inside(&self.record) {
-            Some(Button::Record)
-        } else if inside(&self.close) {
-            Some(Button::Close)
+        if inside(&self.lead) {
+            buttons.0
+        } else if self.trail.as_ref().is_some_and(inside) {
+            buttons.1
         } else {
             None
         }
     }
+}
+
+/// The clock on the pill after `elapsed` of recording: minutes and seconds, never hours, so an
+/// hour reads 60:00.
+fn clock(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 pub fn register(instance: HINSTANCE) -> Result<()> {
@@ -222,14 +308,71 @@ pub fn is_armed() -> bool {
 /// Puts the box around `chosen` on `screen`, and the pill beside it, on the live desktop, and
 /// gives the front back to `previous`, the window the user was in: neither takes the keyboard.
 /// A window clicked is boxed at its visible frame as it is now, within `screen`. Does nothing if
-/// a box is already armed, or if nothing of `chosen` is on `screen`.
-pub fn arm(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>) {
+/// a box is already armed, or if nothing of `chosen` is on `screen`. `tray` says when a GIF could
+/// not be saved.
+pub fn arm(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWND) {
     if !is_armed()
-        && let Ok(armed) = Armed::new(screen, chosen, previous)
+        && let Ok(armed) = Armed::new(screen, chosen, previous, tray)
     {
         ARMED.set(armed);
     }
     window::give_front(previous);
+}
+
+/// Starts recording the box, from now: the pill turns into its clock and Stop.
+fn start_recording() {
+    with_armed(|armed| {
+        if !matches!(armed.pill.stage, Stage::Armed { .. }) {
+            return;
+        }
+        let started = Instant::now();
+        // SAFETY: Takes nothing.
+        let taken = unsafe { GetLocalTime() };
+        let Ok(recorder) =
+            Recorder::start(armed.screen, armed.area, started, taken, armed.pill.hwnd)
+        else {
+            return;
+        };
+        armed.recorder = Some(recorder);
+        let _ = armed.pill.recording(started);
+    });
+}
+
+/// Stops the recording: the pill reads Saving… until the GIF is written.
+fn stop_recording() {
+    with_armed(|armed| {
+        if let Some(recorder) = armed.recorder.take() {
+            recorder.stop();
+            let _ = armed.pill.saving();
+        }
+    });
+}
+
+/// Closes the box and its pill once a recording has ended as `outcome` says, and tells how it
+/// went: a Notice for a GIF saved, a notification for one that could not be.
+fn finish(outcome: Outcome) {
+    let Some((screen, tray)) =
+        ARMED.with_borrow(|armed| armed.as_ref().map(|armed| (armed.screen, armed.tray)))
+    else {
+        return;
+    };
+    disarm();
+    match outcome {
+        Outcome::Saved(path) => notice::show(&save::notice_text(&path), screen),
+        Outcome::Failed(name) => save::notify_failure(tray, &name),
+        Outcome::Nothing => {}
+    }
+}
+
+/// Runs `f` on the box, if one is up and not already in use.
+fn with_armed(f: impl FnOnce(&mut Armed)) {
+    ARMED.with(|armed| {
+        if let Ok(mut armed) = armed.try_borrow_mut()
+            && let Some(armed) = armed.as_mut()
+        {
+            f(armed);
+        }
+    });
 }
 
 /// Closes the box and its pill, leaving nothing on the screen. If a click gave the pill the
@@ -251,7 +394,12 @@ fn disarm() {
 impl Armed {
     /// The box around `chosen` on `screen` and its pill, shown, or none if nothing of `chosen` is
     /// on `screen`. `previous` is the window the user was in.
-    fn new(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>) -> Result<Option<Armed>> {
+    fn new(
+        screen: HMONITOR,
+        chosen: Chosen,
+        previous: Option<HWND>,
+        tray: HWND,
+    ) -> Result<Option<Armed>> {
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -283,11 +431,13 @@ impl Armed {
             }
         };
         Ok(Some(Armed {
-            _screen: screen,
-            _area: area,
+            screen,
+            area,
             line,
             pill,
             previous,
+            tray,
+            recorder: None,
         }))
     }
 }
@@ -406,9 +556,11 @@ impl Pill {
             GetDpiForMonitor(screen, MDT_EFFECTIVE_DPI, &mut dpi, &mut _dpi_y)?;
             let scale = dpi as f32 / 96.0;
             let text = bar::Text::new(scale)?;
-            let record = text.label("Record")?;
-            let close = text.icon(CLOSE_ICON.0, CLOSE_ICON.1)?;
-            let layout = Layout::new(bar::size(&record)?.X, scale);
+            let stage = Stage::Armed {
+                record: text.label("Record")?,
+                close: text.icon(CLOSE_ICON.0, CLOSE_ICON.1)?,
+            };
+            let layout = Layout::of(&stage, scale)?;
             let at = pill_place(chosen, layout.width, layout.height, work, scale);
 
             // No redirection bitmap: the composition surface is all the window shows, with its
@@ -440,9 +592,9 @@ impl Pill {
                 visual.SetContent(&surface)?;
                 let target = graphics.composition.CreateTargetForHwnd(hwnd, true)?;
                 target.SetRoot(&visual)?;
-                Ok::<_, Error>((surface, target))
+                Ok::<_, Error>((surface, visual, target))
             })();
-            let (surface, target) = match made {
+            let (surface, visual, target) = match made {
                 Ok(made) => made,
                 Err(error) => {
                     win32::destroy(hwnd);
@@ -453,10 +605,13 @@ impl Pill {
                 hwnd,
                 composition: graphics.composition,
                 _target: target,
+                visual,
                 surface,
-                record,
-                close,
+                text,
+                stage,
                 scale,
+                chosen,
+                work,
                 layout,
                 hover: None,
                 pressed: None,
@@ -499,17 +654,20 @@ impl Pill {
         }
     }
 
-    /// The pill's hairline and fill, Record with its red dot, and ×, each button tinted while the
-    /// pointer is on it or pressing it. Only between `BeginDraw` and `EndDraw`.
+    /// The pill's hairline and fill, and what its stage shows: Record with its red dot and ×, the
+    /// red dot, the clock and Stop, or Saving…, each button tinted while the pointer is on it or
+    /// pressing it. Only between `BeginDraw` and `EndDraw`.
     fn draw(&self, context: &ID2D1DeviceContext, palette: &Palette) -> Result<()> {
         let layout = &self.layout;
         notice::draw_pill(context, layout.width as f32, layout.height as f32, palette)?;
         let paint = Paint::new(context, palette)?;
-        let radius = (layout.record.bottom - layout.record.top) / 2.0;
-        for (button, area) in [
-            (Button::Record, &layout.record),
-            (Button::Close, &layout.close),
-        ] {
+        let radius = (layout.lead.bottom - layout.lead.top) / 2.0;
+        let (lead, trail) = self.stage.buttons();
+        let buttons = [(lead, Some(&layout.lead)), (trail, layout.trail.as_ref())];
+        for (button, area) in buttons {
+            let (Some(button), Some(area)) = (button, area) else {
+                continue;
+            };
             let tint = match (self.pressed, self.hover) {
                 (Some(pressed), Some(hover)) if pressed == button && hover == button => {
                     Some(Tint::Pressed)
@@ -522,41 +680,144 @@ impl Pill {
             }
         }
         let px = |logical: f32| (logical * self.scale).round();
-        let record = &layout.record;
-        let middle = ((record.top + record.bottom) / 2.0).round();
-        let dot = px(DOT) / 2.0;
-        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
-        unsafe {
-            let red = context.CreateSolidColorBrush(&color(palette.close), None)?;
-            context.FillEllipse(
-                &D2D1_ELLIPSE {
-                    point: Vector2 {
-                        X: record.left + px(PADDING) + dot,
-                        Y: middle,
+        let (label, trail, dot) = self.stage.labels();
+        let lead = &layout.lead;
+        let mut label_left = lead.left + px(PADDING);
+        if dot {
+            let middle = ((lead.top + lead.bottom) / 2.0).round();
+            let radius = px(DOT) / 2.0;
+            // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
+            unsafe {
+                let red = context.CreateSolidColorBrush(&color(palette.close), None)?;
+                context.FillEllipse(
+                    &D2D1_ELLIPSE {
+                        point: Vector2 {
+                            X: label_left + radius,
+                            Y: middle,
+                        },
+                        radiusX: radius,
+                        radiusY: radius,
                     },
-                    radiusX: dot,
-                    radiusY: dot,
-                },
-                &red,
-            );
+                    &red,
+                );
+            }
+            label_left += px(DOT) + px(DOT_GAP);
         }
-        let label = D2D_RECT_F {
-            left: record.left + px(PADDING) + px(DOT) + px(DOT_GAP),
-            right: record.right - px(PADDING),
-            ..*record
+        let area = D2D_RECT_F {
+            left: label_left,
+            right: lead.right - px(PADDING),
+            ..*lead
         };
-        paint.centred(&self.record, &label, Tone::Text)?;
-        paint.centred(&self.close, &layout.close, Tone::Text)
+        paint.centred(label, &area, Tone::Text)?;
+        if let (Some(trail), Some(area)) = (trail, &layout.trail) {
+            paint.centred(trail, area, Tone::Text)?;
+        }
+        Ok(())
+    }
+
+    /// The button at `at`, a client point, if any.
+    fn hit(&self, at: POINT) -> Option<Button> {
+        self.layout.hit(at, self.stage.buttons())
     }
 
     /// Follows the pointer, now at `at` in the client area, redrawing if the button under it
     /// changed.
     fn hover_at(&mut self, at: Option<POINT>) {
-        let hover = at.and_then(|at| self.layout.hit(at));
+        let hover = at.and_then(|at| self.hit(at));
         if hover != self.hover {
             self.hover = hover;
             let _ = self.present();
         }
+    }
+
+    /// Turns the pill into the red dot, the clock counting from `started`, and Stop.
+    fn recording(&mut self, started: Instant) -> Result<()> {
+        let stop = self.text.label("Stop")?;
+        self.show_clock(started, stop)
+    }
+
+    /// Brings the clock up to date, once its next second has come.
+    fn tick(&mut self) -> Result<()> {
+        let Stage::Recording { started, stop, .. } = &self.stage else {
+            return Ok(());
+        };
+        let (started, stop) = (*started, stop.clone());
+        self.show_clock(started, stop)
+    }
+
+    /// Shows the red dot, the clock counting from `started` as it reads now, and `stop`, and wakes
+    /// again just after the clock's next second, so the pill is woken once a second.
+    fn show_clock(&mut self, started: Instant, stop: IDWriteTextLayout) -> Result<()> {
+        let elapsed = started.elapsed();
+        win32::set_timer(
+            self.hwnd,
+            CLOCK_TIMER,
+            1000 - elapsed.subsec_millis() + CLOCK_LATE_MS,
+        );
+        let clock = clock(elapsed);
+        if let Stage::Recording { clock: shown, .. } = &self.stage
+            && *shown == clock
+        {
+            return Ok(());
+        }
+        let stage = Stage::Recording {
+            time: self.text.label(&clock)?,
+            stop,
+            started,
+            clock,
+        };
+        self.restage(stage)
+    }
+
+    /// Turns the pill into Saving…, which has no buttons.
+    fn saving(&mut self) -> Result<()> {
+        win32::kill_timer(self.hwnd, CLOCK_TIMER);
+        let stage = Stage::Saving {
+            saving: self.text.label("Saving\u{2026}")?,
+        };
+        self.restage(stage)
+    }
+
+    /// Shows `stage`: the pill takes the size it needs, placed beside the box as it was, and is
+    /// drawn again. When the buttons change, the one the pointer is on is found on its next move.
+    fn restage(&mut self, stage: Stage) -> Result<()> {
+        let layout = Layout::of(&stage, self.scale)?;
+        if stage.buttons() != self.stage.buttons() {
+            self.hover = None;
+            self.pressed = None;
+        }
+        self.stage = stage;
+        if (layout.width, layout.height) != (self.layout.width, self.layout.height) {
+            // SAFETY: Win32 and DirectComposition calls on live handles, interfaces and locals.
+            unsafe {
+                let surface = self.composition.CreateSurface(
+                    layout.width as u32,
+                    layout.height as u32,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_ALPHA_MODE_PREMULTIPLIED,
+                )?;
+                self.visual.SetContent(&surface)?;
+                self.surface = surface;
+                let at = pill_place(
+                    self.chosen,
+                    layout.width,
+                    layout.height,
+                    self.work,
+                    self.scale,
+                );
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    None,
+                    at.left,
+                    at.top,
+                    layout.width,
+                    layout.height,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            }
+        }
+        self.layout = layout;
+        self.present()
     }
 }
 
@@ -608,7 +869,7 @@ unsafe extern "system" fn pill_proc(
             }
             win32::capture(hwnd);
             with_pill(hwnd, |pill| {
-                pill.pressed = pill.layout.hit(client_point(lparam));
+                pill.pressed = pill.hit(client_point(lparam));
                 pill.hover = pill.pressed;
                 let _ = pill.present();
             });
@@ -616,7 +877,7 @@ unsafe extern "system" fn pill_proc(
         WM_LBUTTONUP => {
             let mut clicked = None;
             with_pill(hwnd, |pill| {
-                let released = pill.layout.hit(client_point(lparam));
+                let released = pill.hit(client_point(lparam));
                 clicked = pill
                     .pressed
                     .take()
@@ -625,9 +886,11 @@ unsafe extern "system" fn pill_proc(
                 let _ = pill.present();
             });
             win32::release_capture();
-            // Record does nothing yet.
-            if clicked == Some(Button::Close) {
-                disarm();
+            match clicked {
+                Some(Button::Record) => start_recording(),
+                Some(Button::Stop) => stop_recording(),
+                Some(Button::Close) => disarm(),
+                None => {}
             }
         }
         WM_CAPTURECHANGED => with_pill(hwnd, |pill| {
@@ -635,7 +898,27 @@ unsafe extern "system" fn pill_proc(
                 let _ = pill.present();
             }
         }),
-        WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => disarm(),
+        // Esc closes an armed box and stops a recording, and waits out the saving.
+        WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => {
+            let mut action: Option<fn()> = None;
+            with_pill(hwnd, |pill| {
+                action = match pill.stage {
+                    Stage::Armed { .. } => Some(disarm),
+                    Stage::Recording { .. } => Some(stop_recording),
+                    Stage::Saving { .. } => None,
+                }
+            });
+            if let Some(action) = action {
+                action();
+            }
+        }
+        WM_TIMER if wparam.0 == CLOCK_TIMER => with_pill(hwnd, |pill| {
+            let _ = pill.tick();
+        }),
+        recording::WM_RECORDED => {
+            // SAFETY: This is a WM_RECORDED message, and its outcome is taken only here.
+            finish(unsafe { recording::outcome(lparam) });
+        }
         _ => return win32::default_proc(hwnd, msg, wparam, lparam),
     }
     LRESULT(0)
@@ -698,6 +981,21 @@ mod tests {
         right: 1920,
         bottom: 1040,
     };
+
+    #[test]
+    fn the_clock_reads_minutes_and_seconds_and_never_hours() {
+        let clock = |seconds| clock(Duration::from_secs(seconds));
+        assert_eq!(clock(0), "0:00");
+        assert_eq!(clock(3), "0:03");
+        assert_eq!(clock(59), "0:59");
+        assert_eq!(clock(60), "1:00");
+        assert_eq!(clock(605), "10:05");
+        assert_eq!(clock(3599), "59:59");
+        assert_eq!(clock(3600), "60:00");
+        assert_eq!(clock(7322), "122:02");
+        // A second is shown once it has passed.
+        assert_eq!(super::clock(Duration::from_millis(2999)), "0:02");
+    }
 
     #[test]
     fn the_pill_sits_centred_below_the_box_past_its_line() {
