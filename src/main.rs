@@ -22,6 +22,7 @@ mod notice;
 mod overlay;
 mod picker;
 mod pixels;
+mod record;
 mod save;
 mod selection;
 mod settings;
@@ -97,9 +98,11 @@ const ID_CAPTURE_SCREEN: usize = 4;
 const ID_CAPTURE_WINDOW: usize = 5;
 const ID_SETTINGS: usize = 6;
 const ID_COPY_TEXT: usize = 7;
+const ID_RECORD: usize = 8;
 const HOTKEY_RETRY_MS: u32 = 500;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
-/// The timer that runs a capture or Copy text chosen from the tray menu once the menu has faded.
+/// The timer that runs a capture, Copy text or Record chosen from the tray menu once the menu has
+/// faded.
 /// Clear of the hotkey ids, which name the hotkey retry timers.
 const MENU_FADE_TIMER: usize = 100;
 /// How long Windows takes to fade a chosen menu item out. The compositor draws the fade after the
@@ -109,8 +112,8 @@ const MENU_FADE_TIMER: usize = 100;
 const MENU_FADE_MS: u32 = 280;
 
 thread_local! {
-    /// A capture or Copy text chosen from the tray menu, waiting out the menu's fade, and the
-    /// window the user was in.
+    /// A capture, Copy text or Record chosen from the tray menu, waiting out the menu's fade, and
+    /// the window the user was in.
     static WAITING: Cell<Option<(Mode, Option<HWND>)>> = const { Cell::new(None) };
 }
 
@@ -121,6 +124,8 @@ pub enum Purpose {
     Capture,
     /// Copy text: the text read in it, on the clipboard.
     CopyText,
+    /// Record: a box around it on the live desktop, armed to record.
+    Record,
 }
 
 fn main() -> Result<()> {
@@ -155,6 +160,7 @@ fn main() -> Result<()> {
         notice::register(instance.into())?;
         entry::register(instance.into())?;
         settings_window::register(instance.into())?;
+        record::register(instance.into())?;
         tooltip::register(instance.into())?;
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -368,14 +374,14 @@ fn claim(hwnd: HWND, mode: Mode, hotkey: Hotkey) -> bool {
 /// their entries say why. Every other mode has its new hotkey from now on.
 pub fn rebind(
     tray: HWND,
-    from: [Option<Hotkey>; 4],
-    to: [Option<Hotkey>; 4],
-) -> [Option<Refusal>; 4] {
+    from: [Option<Hotkey>; Mode::COUNT],
+    to: [Option<Hotkey>; Mode::COUNT],
+) -> [Option<Refusal>; Mode::COUNT] {
     let changing: Vec<Mode> = Mode::ALL
         .into_iter()
         .filter(|mode| from[*mode as usize] != to[*mode as usize])
         .collect();
-    let mut refused = [None; 4];
+    let mut refused = [None; Mode::COUNT];
     // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     unsafe {
         // All released first, so two modes can swap hotkeys.
@@ -450,8 +456,9 @@ fn snipping_tool_owns_printscreen() -> bool {
     status.is_ok() && value != 0
 }
 
-/// Captures or copies text as `mode` asks. `previous` is the window the user was in, which gets
-/// the keyboard back when no editor takes it, or when the editor leaves untouched.
+/// Captures, copies text or arms a box to record, as `mode` asks. `previous` is the window the
+/// user was in, which gets the keyboard back when no editor takes it, or when the editor leaves
+/// untouched.
 fn start(tray: HWND, mode: Mode, previous: Option<HWND>) {
     match mode {
         Mode::Capture => open_overlay(tray, previous, Purpose::Capture),
@@ -462,6 +469,9 @@ fn start(tray: HWND, mode: Mode, previous: Option<HWND>) {
             previous,
         ),
         Mode::CopyText => open_overlay(tray, previous, Purpose::CopyText),
+        // While a box is armed, Record opens no second overlay and makes no second box.
+        Mode::Record if record::is_armed() => {}
+        Mode::Record => open_overlay(tray, previous, Purpose::Record),
     }
 }
 
@@ -476,8 +486,8 @@ fn after_fade(tray: HWND, chosen: Mode, previous: Option<HWND>) {
     }
 }
 
-/// Drops a capture or Copy text chosen from the tray menu that is still waiting out the menu's
-/// fade, because the user has asked for something else since.
+/// Drops a capture, Copy text or Record chosen from the tray menu that is still waiting out the
+/// menu's fade, because the user has asked for something else since.
 fn cancel_waiting(tray: HWND) {
     if WAITING.take().is_some() {
         win32::kill_timer(tray, MENU_FADE_TIMER);
@@ -636,6 +646,8 @@ pub fn deliver(
                 window::give_front(previous);
                 copy_text::start(image, screen, tray);
             }
+            // The overlay arms a box for Record rather than delivering a capture.
+            Purpose::Record => {}
         },
         None => notify(tray, "Capture failed"),
     }
@@ -665,6 +677,7 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE_WINDOW, w!("Capture window"));
         let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE_SCREEN, w!("Capture screen"));
         let _ = AppendMenuW(menu, MF_STRING, ID_COPY_TEXT, w!("Copy text"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_RECORD, w!("Record"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_SAVE_FOLDER, w!("Open save folder"));
         let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Settings"));
@@ -692,6 +705,7 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
             ID_CAPTURE_WINDOW => after_fade(hwnd, Mode::Window, previous),
             ID_CAPTURE_SCREEN => after_fade(hwnd, Mode::Screen, previous),
             ID_COPY_TEXT => after_fade(hwnd, Mode::CopyText, previous),
+            ID_RECORD => after_fade(hwnd, Mode::Record, previous),
             ID_OPEN_SAVE_FOLDER => save::open_folder(),
             ID_SETTINGS => settings_window::open(hwnd),
             ID_QUIT => {

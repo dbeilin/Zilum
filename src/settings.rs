@@ -29,7 +29,7 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// One per mode, in the order of `Mode::ALL`; `None` is a mode with no hotkey.
-    pub hotkeys: [Option<Hotkey>; 4],
+    pub hotkeys: [Option<Hotkey>; Mode::COUNT],
     /// The colour of the next annotation.
     pub colour: Colour,
     /// The size each tool places its next annotation at.
@@ -343,6 +343,7 @@ fn file_key(mode: Mode) -> &'static str {
         Mode::Screen => "hotkey_screen",
         Mode::Window => "hotkey_window",
         Mode::CopyText => "hotkey_text",
+        Mode::Record => "hotkey_record",
     }
 }
 
@@ -395,7 +396,7 @@ fn colour_name(colour: Colour) -> &'static str {
 mod tests {
     use super::*;
 
-    fn hotkeys(texts: [&str; 4]) -> [Option<Hotkey>; 4] {
+    fn hotkeys(texts: [&str; 5]) -> [Option<Hotkey>; 5] {
         texts.map(|text| Hotkey::parse(text).unwrap())
     }
 
@@ -571,10 +572,55 @@ mod tests {
         let (settings, invalid) = parse("hotkey_screen=F12\n");
         assert_eq!(
             settings.hotkeys,
-            hotkeys(["PrintScreen", "F12", "None", "None"])
+            hotkeys(["PrintScreen", "F12", "None", "None", "None"])
         );
         assert!(!invalid);
         assert_eq!(parse(""), (defaults(), false));
+    }
+
+    #[test]
+    fn a_file_from_before_record_reads_its_hotkey_as_none_silently() {
+        let (settings, invalid) = parse(
+            "hotkey_capture=PrintScreen\nhotkey_screen=Shift+PrintScreen\nhotkey_window=None\nhotkey_text=None\ncolor=blue\n",
+        );
+        assert_eq!(settings.hotkeys[Mode::Record as usize], None);
+        assert!(!invalid);
+    }
+
+    #[test]
+    fn the_record_hotkey_is_read_from_its_own_key() {
+        let (settings, invalid) = parse("hotkey_record=Ctrl+PrintScreen\n");
+        assert_eq!(
+            settings.hotkeys,
+            hotkeys([
+                "PrintScreen",
+                "Shift+PrintScreen",
+                "None",
+                "None",
+                "Ctrl+PrintScreen"
+            ])
+        );
+        assert!(!invalid);
+        assert_eq!(parse("hotkey_record=Banana\n"), (defaults(), true));
+    }
+
+    #[test]
+    fn a_record_hotkey_repeating_an_earlier_modes_is_flagged_and_leaves_record_with_none() {
+        let (settings, invalid) = parse("hotkey_text=Ctrl+Alt+T\nhotkey_record=ctrl+alt+t\n");
+        assert_eq!(
+            settings.hotkeys,
+            hotkeys([
+                "PrintScreen",
+                "Shift+PrintScreen",
+                "None",
+                "Ctrl+Alt+T",
+                "None"
+            ])
+        );
+        assert!(invalid);
+        let (settings, invalid) = parse("hotkey_record=PrintScreen\n");
+        assert_eq!(settings.hotkeys[Mode::Record as usize], None);
+        assert!(invalid);
     }
 
     #[test]
@@ -582,7 +628,7 @@ mod tests {
         let (settings, invalid) = parse("hotkey_screen=PrintScreen\n");
         assert_eq!(
             settings.hotkeys,
-            hotkeys(["PrintScreen", "None", "None", "None"])
+            hotkeys(["PrintScreen", "None", "None", "None", "None"])
         );
         assert!(invalid);
     }
@@ -594,7 +640,7 @@ mod tests {
         );
         assert_eq!(
             to_text(&settings),
-            "hotkey_capture=Ctrl+Alt+Shift+R\r\nhotkey_screen=Shift+PrintScreen\r\nhotkey_window=None\r\nhotkey_text=None\r\nsave_folder=C:\\Users\\me\\Pictures\\Zilum\r\nstart_with_windows=true\r\ntheme=light\r\nwindow_background=trim\r\ncolor=blue\r\narrow_size=3\r\nrect_size=11\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=8\r\n"
+            "hotkey_capture=Ctrl+Alt+Shift+R\r\nhotkey_screen=Shift+PrintScreen\r\nhotkey_window=None\r\nhotkey_text=None\r\nhotkey_record=None\r\nsave_folder=C:\\Users\\me\\Pictures\\Zilum\r\nstart_with_windows=true\r\ntheme=light\r\nwindow_background=trim\r\ncolor=blue\r\narrow_size=3\r\nrect_size=11\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=8\r\n"
         );
     }
 
@@ -606,7 +652,13 @@ mod tests {
                 let stroke = |offset: u32| 1 + (11 * step + offset) % 12;
                 for theme in Theme::ALL {
                     let settings = Settings {
-                        hotkeys: hotkeys(["Alt+F3", "None", "Ctrl+Shift+5", "F9"]),
+                        hotkeys: hotkeys([
+                            "Alt+F3",
+                            "None",
+                            "Ctrl+Shift+5",
+                            "F9",
+                            "Ctrl+PrintScreen",
+                        ]),
                         colour,
                         sizes: sizes([stroke(0), stroke(5), stroke(colour as u32), 16 + 24 * step]),
                         text_size: TextSize::new(6 + 197 * step).unwrap(),

@@ -55,6 +55,7 @@ use windows_numerics::{Matrix3x2, Vector2};
 use crate::{
     Purpose, capture, editor,
     graphics::{self, Graphics},
+    record::{self, Chosen},
     selection::{self, Point, Selection, local},
     slide::{self, Area, Highlight, Slide},
     win32,
@@ -853,10 +854,18 @@ fn release(pointer: Point) -> Option<Release> {
     })
 }
 
-/// Puts the capture on the clipboard and in an editor, or reads its text, as the release's purpose
-/// asks. The overlay is still open, and closes when the front goes from it back to the window the
-/// user was in.
+/// Puts the capture on the clipboard and in an editor, reads its text, or arms a box around it to
+/// record, as the release's purpose asks. The overlay is still open, and closes when the front
+/// goes from it back to the window the user was in.
 fn capture(release: Release) {
+    if release.purpose == Purpose::Record {
+        let chosen = match release.taking {
+            Taking::Region(selection) => Chosen::Region(selection),
+            Taking::Window(_, window) => Chosen::Window(window),
+        };
+        record::arm(release.shown_on, chosen, release.previous);
+        return;
+    }
     match release.taking {
         Taking::Region(selection) => crate::deliver(
             release.tray,

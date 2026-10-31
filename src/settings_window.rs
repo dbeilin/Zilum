@@ -1,5 +1,5 @@
 //! The Settings window: drawn by Zilum in the theme and frameless like the editor, a title row
-//! over four groups in one column, where the user chooses the four hotkeys, the save folder,
+//! over four groups in one column, where the user chooses the five hotkeys, the save folder,
 //! the theme and whether Zilum starts with Windows. There is no Apply: each choice takes effect,
 //! and is written to the settings file, the moment it is made and valid. A hotkey field, once
 //! clicked, listens for the next combination pressed and takes it at once. The folder field is a
@@ -109,11 +109,12 @@ const VERSION: &str = concat!("Version ", env!("CARGO_PKG_VERSION"));
 const RELEASES: &str = "https://github.com/dbeilin/Zilum/releases";
 const HEADINGS: [&str; 4] = ["Hotkeys", "Saving", "Appearance", "Startup"];
 /// Each row's name, in the order of `Layout::labels`.
-const LABELS: [&str; 8] = [
+const LABELS: [&str; Mode::COUNT + 4] = [
     "Capture",
     "Screen",
     "Window",
     "Copy text",
+    "Record",
     "Save folder",
     "Theme",
     "Window background",
@@ -132,7 +133,7 @@ const FIELD_PADDING: f32 = 10.0;
 /// How far a clear control's tint sits inside the field's edge.
 const CLEAR_INSET: f32 = 4.0;
 /// The folder's message, after the hotkey fields' in `State::messages`.
-const FOLDER_MESSAGE: usize = 4;
+const FOLDER_MESSAGE: usize = Mode::COUNT;
 const NOT_A_FOLDER: &str = "Not a valid folder";
 
 thread_local! {
@@ -166,7 +167,7 @@ struct State {
     dpi: u32,
     layout: Layout,
     /// Under each hotkey field and the folder field, empty when there is nothing to say.
-    messages: [String; 5],
+    messages: [String; Mode::COUNT + 1],
     /// The control the keyboard is on, if any.
     focus: Option<Stop>,
     /// Whether that control shows the focus ring: once Tab has moved the keyboard, until a click.
@@ -396,7 +397,7 @@ fn create() -> Result<()> {
         GetMonitorInfoW(monitor, &mut info).ok()?;
         let (mut dpi, mut _dpi_y) = (96, 96);
         GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi, &mut _dpi_y)?;
-        let layout = Layout::new(scale(dpi), [1; 5]);
+        let layout = Layout::new(scale(dpi), [1; Mode::COUNT + 1]);
         let borders = frame::borders(STYLE, dpi)?;
         let (width, height) = window_size(&layout, dpi)?;
         // The client area, which is all that shows, centred in the work area.
@@ -582,8 +583,8 @@ impl State {
     fn relayout(&mut self) -> Result<()> {
         let scale = scale(self.dpi);
         // A message's width is the same however long the messages are.
-        let room = Layout::new(scale, [1; 5]).messages;
-        let mut lines = [1; 5];
+        let room = Layout::new(scale, [1; Mode::COUNT + 1]).messages;
+        let mut lines = [1; Mode::COUNT + 1];
         for (at, message) in self.messages.iter().enumerate() {
             if !message.is_empty() {
                 let width = room[at].right - room[at].left;

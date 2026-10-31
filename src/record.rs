@@ -1,0 +1,778 @@
+//! Record: the box on the live desktop around the area chosen on the overlay, and the Record pill
+//! beside it. Both are excluded from capture, as a Notice is, so neither is ever in a capture or
+//! in the overlay's frozen picture.
+
+use std::cell::RefCell;
+
+use windows::{
+    Win32::{
+        Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::{
+            Direct2D::{
+                Common::D2D_RECT_F, D2D1_ELLIPSE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+                ID2D1DeviceContext,
+            },
+            DirectComposition::{
+                IDCompositionDesktopDevice, IDCompositionSurface, IDCompositionTarget,
+            },
+            DirectWrite::IDWriteTextLayout,
+            Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute},
+            Dxgi::Common::{DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM},
+            Gdi::{
+                COLOR_WINDOW, CombineRgn, CreateRectRgn, CreateSolidBrush, DeleteObject,
+                GetMonitorInfoW, HBRUSH, HMONITOR, MONITORINFO, RGN_DIFF, RGN_ERROR, SetWindowRgn,
+            },
+        },
+        System::LibraryLoader::GetModuleHandleW,
+        UI::{
+            HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+            Input::KeyboardAndMouse::{
+                SetFocus, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE,
+            },
+            WindowsAndMessaging::{
+                CreateWindowExW, GetForegroundWindow, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA,
+                LoadCursorW, RegisterClassW, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetForegroundWindow,
+                SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowPos,
+                WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_KEYDOWN, WM_LBUTTONDOWN,
+                WM_LBUTTONUP, WM_MOUSEMOVE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+                WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+                WS_POPUP,
+            },
+        },
+    },
+    core::{BOOL, Error, Result, w},
+};
+use windows_numerics::{Matrix3x2, Vector2};
+
+use crate::{
+    annotation::color,
+    bar::{self, Paint, Tint, Tone},
+    graphics, notice,
+    selection::Selection,
+    settings,
+    theme::{self, Palette},
+    win32, window,
+};
+
+/// The box's line, in physical pixels, drawn just outside the chosen rectangle.
+const LINE: i32 = 2;
+/// Zilum's blue, the logo's, which the box's line is drawn in.
+const BLUE: u32 = 0x2060D0;
+/// Measurements in logical pixels: between the box's line and the pill, the pill's height, how
+/// far its buttons sit inside its edge and from each other, either side of Record's content, the
+/// red dot and the space after it, and the width of ×.
+const GAP: f32 = 8.0;
+const HEIGHT: f32 = 40.0;
+const INSET: f32 = 4.0;
+const BETWEEN: f32 = 2.0;
+const PADDING: f32 = 12.0;
+const DOT: f32 = 10.0;
+const DOT_GAP: f32 = 8.0;
+const CLOSE_WIDTH: f32 = 32.0;
+/// ×, as the editor's command bar has it.
+const CLOSE_ICON: (char, &str) = ('\u{E8BB}', "\u{00D7}");
+/// Sent when the pointer leaves the pill. Only the `Win32_UI_Controls` feature's headers name
+/// it.
+const WM_MOUSELEAVE: u32 = 0x02A3;
+
+thread_local! {
+    /// The box and its pill while one is armed. There is never a second.
+    static ARMED: RefCell<Option<Armed>> = const { RefCell::new(None) };
+}
+
+/// What was chosen on the overlay for Record.
+pub enum Chosen {
+    /// A region, in physical pixels of its screen.
+    Region(Selection),
+    /// A window, whose visible frame the box goes around.
+    Window(HWND),
+}
+
+/// A box on the live desktop and its pill.
+struct Armed {
+    /// The box: one screen, and a rectangle in its physical pixels. Nothing about it is logical.
+    _screen: HMONITOR,
+    _area: Selection,
+    /// The window that draws the box's line, unless all of the line is off the screen.
+    line: Option<HWND>,
+    pill: Pill,
+    /// The window the user was in, which gets the front back when the pill had it.
+    previous: Option<HWND>,
+}
+
+/// The Record pill's window, and what it draws.
+struct Pill {
+    hwnd: HWND,
+    composition: IDCompositionDesktopDevice,
+    /// Puts `surface` in the window. Kept alive with it.
+    _target: IDCompositionTarget,
+    surface: IDCompositionSurface,
+    record: IDWriteTextLayout,
+    close: IDWriteTextLayout,
+    scale: f32,
+    layout: Layout,
+    /// The button the pointer is on, and the one the left button went down on while it is held.
+    hover: Option<Button>,
+    pressed: Option<Button>,
+}
+
+/// A button on the pill.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Button {
+    Record,
+    Close,
+}
+
+/// Where the pill's buttons are, in physical pixels of its window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Layout {
+    width: i32,
+    height: i32,
+    record: D2D_RECT_F,
+    close: D2D_RECT_F,
+}
+
+impl Layout {
+    /// The pill at `scale` with Record's label `label` physical pixels wide: Record, then ×, both
+    /// as tall as the pill less its inset.
+    fn new(label: f32, scale: f32) -> Layout {
+        let px = |logical: f32| (logical * scale).round();
+        let (inset, height) = (px(INSET), px(HEIGHT));
+        let record_right = inset + px(PADDING) + px(DOT) + px(DOT_GAP) + label.ceil() + px(PADDING);
+        let close_left = record_right + px(BETWEEN);
+        let close_right = close_left + px(CLOSE_WIDTH);
+        let (top, bottom) = (inset, height - inset);
+        Layout {
+            width: (close_right + inset) as i32,
+            height: height as i32,
+            record: D2D_RECT_F {
+                left: inset,
+                top,
+                right: record_right,
+                bottom,
+            },
+            close: D2D_RECT_F {
+                left: close_left,
+                top,
+                right: close_right,
+                bottom,
+            },
+        }
+    }
+
+    /// The button at `at`, a client point, if any.
+    fn hit(&self, at: POINT) -> Option<Button> {
+        let (x, y) = (at.x as f32, at.y as f32);
+        let inside = |rect: &D2D_RECT_F| {
+            x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom
+        };
+        if inside(&self.record) {
+            Some(Button::Record)
+        } else if inside(&self.close) {
+            Some(Button::Close)
+        } else {
+            None
+        }
+    }
+}
+
+pub fn register(instance: HINSTANCE) -> Result<()> {
+    // SAFETY: The window procedures are WNDPROCs, and the class names and cursors are static. The
+    // box's brush is kept for as long as Zilum runs.
+    unsafe {
+        let line = WNDCLASSW {
+            lpfnWndProc: Some(line_proc),
+            hInstance: instance,
+            lpszClassName: w!("Zilum.Box"),
+            // Its region is the line; the brush paints all of it.
+            hbrBackground: brush(BLUE),
+            ..Default::default()
+        };
+        let pill = WNDCLASSW {
+            lpfnWndProc: Some(pill_proc),
+            hInstance: instance,
+            lpszClassName: w!("Zilum.RecordPill"),
+            hCursor: LoadCursorW(None, IDC_ARROW)?,
+            ..Default::default()
+        };
+        if RegisterClassW(&line) == 0 || RegisterClassW(&pill) == 0 {
+            return Err(Error::from_thread());
+        }
+    }
+    Ok(())
+}
+
+/// A GDI brush of `rgb`, an sRGB colour, or the window colour if one cannot be made.
+fn brush(rgb: u32) -> HBRUSH {
+    let bgr = (rgb & 0xFF) << 16 | (rgb & 0xFF00) | (rgb >> 16) & 0xFF;
+    // SAFETY: Takes only an integer.
+    let made = unsafe { CreateSolidBrush(COLORREF(bgr)) };
+    if made.is_invalid() {
+        HBRUSH((COLOR_WINDOW.0 + 1) as isize as *mut _)
+    } else {
+        made
+    }
+}
+
+/// Whether a box is armed.
+pub fn is_armed() -> bool {
+    ARMED.with_borrow(|armed| armed.is_some())
+}
+
+/// Puts the box around `chosen` on `screen`, and the pill beside it, on the live desktop, and
+/// gives the front back to `previous`, the window the user was in: neither takes the keyboard.
+/// A window clicked is boxed at its visible frame as it is now, within `screen`. Does nothing if
+/// a box is already armed, or if nothing of `chosen` is on `screen`.
+pub fn arm(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>) {
+    if !is_armed()
+        && let Ok(armed) = Armed::new(screen, chosen, previous)
+    {
+        ARMED.set(armed);
+    }
+    window::give_front(previous);
+}
+
+/// Closes the box and its pill, leaving nothing on the screen. If a click gave the pill the
+/// front, it goes back to the window the user was in, as Esc on the overlay gives it.
+fn disarm() {
+    // Taken out first: destroying the pill sends it messages that look for it.
+    if let Some(armed) = ARMED.take() {
+        // SAFETY: Takes nothing.
+        if unsafe { GetForegroundWindow() } == armed.pill.hwnd {
+            window::give_front(armed.previous);
+        }
+        win32::destroy(armed.pill.hwnd);
+        if let Some(line) = armed.line {
+            win32::destroy(line);
+        }
+    }
+}
+
+impl Armed {
+    /// The box around `chosen` on `screen` and its pill, shown, or none if nothing of `chosen` is
+    /// on `screen`. `previous` is the window the user was in.
+    fn new(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>) -> Result<Option<Armed>> {
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+        unsafe { GetMonitorInfoW(screen, &mut info).ok()? };
+        let bounds = info.rcMonitor;
+        let area = match chosen {
+            Chosen::Region(selection) => Some(selection),
+            Chosen::Window(hwnd) => within(window::frame(hwnd)?, bounds),
+        };
+        let Some(area) = area else {
+            return Ok(None);
+        };
+        let chosen = RECT {
+            left: bounds.left + area.left,
+            top: bounds.top + area.top,
+            right: bounds.left + area.left + area.width,
+            bottom: bounds.top + area.top + area.height,
+        };
+        let line = line_window(chosen, bounds)?;
+        let pill = match Pill::new(screen, chosen, info.rcWork) {
+            Ok(pill) => pill,
+            Err(error) => {
+                if let Some(line) = line {
+                    win32::destroy(line);
+                }
+                return Err(error);
+            }
+        };
+        Ok(Some(Armed {
+            _screen: screen,
+            _area: area,
+            line,
+            pill,
+            previous,
+        }))
+    }
+}
+
+/// The part of `frame`, in physical pixels of the desktop, on the screen at `screen`, in physical
+/// pixels of that screen, or none if no part is.
+fn within(frame: RECT, screen: RECT) -> Option<Selection> {
+    let (left, top) = (frame.left.max(screen.left), frame.top.max(screen.top));
+    let (right, bottom) = (
+        frame.right.min(screen.right),
+        frame.bottom.min(screen.bottom),
+    );
+    (right > left && bottom > top).then(|| Selection {
+        left: left - screen.left,
+        top: top - screen.top,
+        width: right - left,
+        height: bottom - top,
+    })
+}
+
+/// Common to the box's line and the pill: shown at once, without the fade Windows gives a new
+/// window, and kept out of every capture from before it is ever shown.
+fn prepare(hwnd: HWND) {
+    let disabled = BOOL::from(true);
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+    unsafe {
+        let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_TRANSITIONS_FORCEDISABLED,
+            &disabled as *const BOOL as *const _,
+            size_of::<BOOL>() as u32,
+        );
+    }
+}
+
+/// Shows the box's line, `LINE` pixels wide just outside `chosen`, as far as it is on the screen
+/// at `screen`: a window whose region is the line, so everything inside it is the desktop's.
+/// Clicks pass through it, and it never takes the keyboard. None when none of the line is on the
+/// screen, as for a box of the whole screen: a window the size of the screen would pass for a
+/// full-screen app.
+fn line_window(chosen: RECT, screen: RECT) -> Result<Option<HWND>> {
+    // A line on the next screen would be a box across two.
+    let outer = RECT {
+        left: (chosen.left - LINE).max(screen.left),
+        top: (chosen.top - LINE).max(screen.top),
+        right: (chosen.right + LINE).min(screen.right),
+        bottom: (chosen.bottom + LINE).min(screen.bottom),
+    };
+    if outer == chosen {
+        return Ok(None);
+    }
+    let (width, height) = (outer.right - outer.left, outer.bottom - outer.top);
+    // SAFETY: Win32 calls on live handles and locals. The window owns the region it is given;
+    // every other region is deleted here.
+    unsafe {
+        // Layered and transparent, so a click on the line passes through to whatever is under it.
+        let hwnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+            w!("Zilum.Box"),
+            None,
+            WS_POPUP,
+            outer.left,
+            outer.top,
+            width,
+            height,
+            None,
+            None,
+            Some(GetModuleHandleW(None)?.into()),
+            None,
+        )?;
+        // A layered window shows nothing until it is given an opacity.
+        if let Err(error) = SetLayeredWindowAttributes(hwnd, Default::default(), 255, LWA_ALPHA) {
+            win32::destroy(hwnd);
+            return Err(error);
+        }
+        prepare(hwnd);
+        // Without its region the window would be a solid block over the box: it is not shown.
+        let region = CreateRectRgn(0, 0, width, height);
+        let inside = CreateRectRgn(
+            chosen.left - outer.left,
+            chosen.top - outer.top,
+            chosen.right - outer.left,
+            chosen.bottom - outer.top,
+        );
+        let combined = !region.is_invalid()
+            && !inside.is_invalid()
+            && CombineRgn(Some(region), Some(region), Some(inside), RGN_DIFF) != RGN_ERROR;
+        let _ = DeleteObject(inside.into());
+        if !combined || SetWindowRgn(hwnd, Some(region), false) == 0 {
+            let _ = DeleteObject(region.into());
+            win32::destroy(hwnd);
+            return Err(Error::from_thread());
+        }
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            outer.left,
+            outer.top,
+            width,
+            height,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+        Ok(Some(hwnd))
+    }
+}
+
+impl Pill {
+    /// The pill for the box around `chosen` on `screen`, whose work area is `work`, shown beside
+    /// it without the keyboard.
+    fn new(screen: HMONITOR, chosen: RECT, work: RECT) -> Result<Pill> {
+        let graphics = graphics::get()?;
+        // SAFETY: Win32 and DirectComposition calls on live handles, interfaces and locals.
+        unsafe {
+            let (mut dpi, mut _dpi_y) = (96, 96);
+            GetDpiForMonitor(screen, MDT_EFFECTIVE_DPI, &mut dpi, &mut _dpi_y)?;
+            let scale = dpi as f32 / 96.0;
+            let text = bar::Text::new(scale)?;
+            let record = text.label("Record")?;
+            let close = text.icon(CLOSE_ICON.0, CLOSE_ICON.1)?;
+            let layout = Layout::new(bar::size(&record)?.X, scale);
+            let at = pill_place(chosen, layout.width, layout.height, work, scale);
+
+            // No redirection bitmap: the composition surface is all the window shows, with its
+            // corners see-through. Not activated by a click: the press takes the keyboard itself,
+            // so nothing else ever hands it the front.
+            let hwnd = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
+                w!("Zilum.RecordPill"),
+                w!("Zilum Record"),
+                WS_POPUP,
+                at.left,
+                at.top,
+                layout.width,
+                layout.height,
+                None,
+                None,
+                Some(GetModuleHandleW(None)?.into()),
+                None,
+            )?;
+            prepare(hwnd);
+            let made = (|| {
+                let surface = graphics.composition.CreateSurface(
+                    layout.width as u32,
+                    layout.height as u32,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_ALPHA_MODE_PREMULTIPLIED,
+                )?;
+                let visual = graphics.composition.CreateVisual()?;
+                visual.SetContent(&surface)?;
+                let target = graphics.composition.CreateTargetForHwnd(hwnd, true)?;
+                target.SetRoot(&visual)?;
+                Ok::<_, Error>((surface, target))
+            })();
+            let (surface, target) = match made {
+                Ok(made) => made,
+                Err(error) => {
+                    win32::destroy(hwnd);
+                    return Err(error);
+                }
+            };
+            let pill = Pill {
+                hwnd,
+                composition: graphics.composition,
+                _target: target,
+                surface,
+                record,
+                close,
+                scale,
+                layout,
+                hover: None,
+                pressed: None,
+            };
+            if let Err(error) = pill.present() {
+                win32::destroy(hwnd);
+                return Err(error);
+            }
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                at.left,
+                at.top,
+                layout.width,
+                layout.height,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+            Ok(pill)
+        }
+    }
+
+    /// Draws the pill as it is now, in the theme.
+    fn present(&self) -> Result<()> {
+        // SAFETY: COM calls on live interfaces and pointers to live locals.
+        unsafe {
+            let mut offset = POINT::default();
+            let context: ID2D1DeviceContext = self.surface.BeginDraw(None, &mut offset)?;
+            // One unit is one physical pixel, and the surface may sit anywhere in a larger one
+            // of DWM's.
+            context.SetDpi(96.0, 96.0);
+            context.SetTransform(&Matrix3x2::translation(offset.x as f32, offset.y as f32));
+            // ClearType needs an opaque target to blend against; grayscale works on anything.
+            context.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+            let palette = theme::palette(settings::current().theme);
+            let drawn = self.draw(&context, &palette);
+            let ended = self.surface.EndDraw();
+            drawn?;
+            ended?;
+            self.composition.Commit()
+        }
+    }
+
+    /// The pill's hairline and fill, Record with its red dot, and ×, each button tinted while the
+    /// pointer is on it or pressing it. Only between `BeginDraw` and `EndDraw`.
+    fn draw(&self, context: &ID2D1DeviceContext, palette: &Palette) -> Result<()> {
+        let layout = &self.layout;
+        notice::draw_pill(context, layout.width as f32, layout.height as f32, palette)?;
+        let paint = Paint::new(context, palette)?;
+        let radius = (layout.record.bottom - layout.record.top) / 2.0;
+        for (button, area) in [
+            (Button::Record, &layout.record),
+            (Button::Close, &layout.close),
+        ] {
+            let tint = match (self.pressed, self.hover) {
+                (Some(pressed), Some(hover)) if pressed == button && hover == button => {
+                    Some(Tint::Pressed)
+                }
+                (None, Some(hover)) if hover == button => Some(Tint::Hover),
+                _ => None,
+            };
+            if let Some(tint) = tint {
+                paint.tint(area, tint, radius);
+            }
+        }
+        let px = |logical: f32| (logical * self.scale).round();
+        let record = &layout.record;
+        let middle = ((record.top + record.bottom) / 2.0).round();
+        let dot = px(DOT) / 2.0;
+        // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
+        unsafe {
+            let red = context.CreateSolidColorBrush(&color(palette.close), None)?;
+            context.FillEllipse(
+                &D2D1_ELLIPSE {
+                    point: Vector2 {
+                        X: record.left + px(PADDING) + dot,
+                        Y: middle,
+                    },
+                    radiusX: dot,
+                    radiusY: dot,
+                },
+                &red,
+            );
+        }
+        let label = D2D_RECT_F {
+            left: record.left + px(PADDING) + px(DOT) + px(DOT_GAP),
+            right: record.right - px(PADDING),
+            ..*record
+        };
+        paint.centred(&self.record, &label, Tone::Text)?;
+        paint.centred(&self.close, &layout.close, Tone::Text)
+    }
+
+    /// Follows the pointer, now at `at` in the client area, redrawing if the button under it
+    /// changed.
+    fn hover_at(&mut self, at: Option<POINT>) {
+        let hover = at.and_then(|at| self.layout.hit(at));
+        if hover != self.hover {
+            self.hover = hover;
+            let _ = self.present();
+        }
+    }
+}
+
+/// The client point in a mouse message's `lparam`.
+fn client_point(lparam: LPARAM) -> POINT {
+    POINT {
+        x: (lparam.0 & 0xFFFF) as i16 as i32,
+        y: ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+    }
+}
+
+/// Runs `f` on the pill whose window is `hwnd`, if it is armed and not already in use.
+fn with_pill(hwnd: HWND, f: impl FnOnce(&mut Pill)) {
+    ARMED.with(|armed| {
+        if let Ok(mut armed) = armed.try_borrow_mut()
+            && let Some(armed) = armed.as_mut()
+            && armed.pill.hwnd == hwnd
+        {
+            f(&mut armed.pill);
+        }
+    });
+}
+
+unsafe extern "system" fn pill_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_MOUSEMOVE => {
+            let mut track = TRACKMOUSEEVENT {
+                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                dwFlags: TME_LEAVE,
+                hwndTrack: hwnd,
+                dwHoverTime: 0,
+            };
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+            let _ = unsafe { TrackMouseEvent(&mut track) };
+            with_pill(hwnd, |pill| pill.hover_at(Some(client_point(lparam))));
+        }
+        WM_MOUSELEAVE => with_pill(hwnd, |pill| pill.hover_at(None)),
+        WM_LBUTTONDOWN => {
+            // A click gives the pill the keyboard, so Esc then closes it.
+            // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+            unsafe {
+                let _ = SetForegroundWindow(hwnd);
+                let _ = SetFocus(Some(hwnd));
+            }
+            win32::capture(hwnd);
+            with_pill(hwnd, |pill| {
+                pill.pressed = pill.layout.hit(client_point(lparam));
+                pill.hover = pill.pressed;
+                let _ = pill.present();
+            });
+        }
+        WM_LBUTTONUP => {
+            let mut clicked = None;
+            with_pill(hwnd, |pill| {
+                let released = pill.layout.hit(client_point(lparam));
+                clicked = pill
+                    .pressed
+                    .take()
+                    .filter(|pressed| Some(*pressed) == released);
+                pill.hover = released;
+                let _ = pill.present();
+            });
+            win32::release_capture();
+            // Record does nothing yet.
+            if clicked == Some(Button::Close) {
+                disarm();
+            }
+        }
+        WM_CAPTURECHANGED => with_pill(hwnd, |pill| {
+            if pill.pressed.take().is_some() {
+                let _ = pill.present();
+            }
+        }),
+        WM_KEYDOWN if wparam.0 == VK_ESCAPE.0 as usize => disarm(),
+        _ => return win32::default_proc(hwnd, msg, wparam, lparam),
+    }
+    LRESULT(0)
+}
+
+unsafe extern "system" fn line_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    win32::default_proc(hwnd, msg, wparam, lparam)
+}
+
+/// Where a pill `width` by `height` goes for the box around `chosen` on a screen whose work area
+/// is `work`, at `scale`: centred below the box's line, or above it when there is no room below,
+/// or inside the box along its bottom edge when there is room neither way, and always within the
+/// work area.
+fn pill_place(chosen: RECT, width: i32, height: i32, work: RECT, scale: f32) -> RECT {
+    let gap = (GAP * scale).round() as i32;
+    let below = chosen.bottom + LINE + gap;
+    let above = chosen.top - LINE - gap - height;
+    let top = if below + height <= work.bottom {
+        below
+    } else if above >= work.top {
+        above
+    } else {
+        // The line is not between them, so the gap alone.
+        chosen.bottom - gap - height
+    };
+    let top = top.min(work.bottom - height).max(work.top);
+    let left = (chosen.left + chosen.right - width)
+        .div_euclid(2)
+        .min(work.right - width)
+        .max(work.left);
+    RECT {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(left: i32, top: i32, right: i32, bottom: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    const WORK: RECT = RECT {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1040,
+    };
+
+    #[test]
+    fn the_pill_sits_centred_below_the_box_past_its_line() {
+        // 2 of line and 8 of gap.
+        assert_eq!(
+            pill_place(rect(1000, 600, 1200, 750), 160, 40, WORK, 1.0),
+            rect(1020, 760, 1180, 800)
+        );
+        // Just room below.
+        assert_eq!(
+            pill_place(rect(1000, 600, 1200, 990), 160, 40, WORK, 1.0),
+            rect(1020, 1000, 1180, 1040)
+        );
+    }
+
+    #[test]
+    fn with_no_room_below_it_sits_above_the_box() {
+        assert_eq!(
+            pill_place(rect(1000, 600, 1200, 991), 160, 40, WORK, 1.0),
+            rect(1020, 550, 1180, 590)
+        );
+        // A box reaching under the taskbar.
+        assert_eq!(
+            pill_place(rect(300, 900, 700, 1080), 160, 40, WORK, 1.0),
+            rect(420, 850, 580, 890)
+        );
+    }
+
+    #[test]
+    fn with_room_neither_way_it_sits_inside_the_box_along_its_bottom() {
+        let screen = rect(0, 0, 1920, 1080);
+        assert_eq!(
+            pill_place(screen, 160, 40, screen, 1.0),
+            rect(880, 1032, 1040, 1072)
+        );
+        // Over a taskbar, it keeps above it.
+        assert_eq!(
+            pill_place(screen, 160, 40, WORK, 1.0),
+            rect(880, 1000, 1040, 1040)
+        );
+        // Just too little room above and below.
+        assert_eq!(
+            pill_place(rect(0, 49, 1920, 991), 160, 40, WORK, 1.0),
+            rect(880, 943, 1040, 983)
+        );
+    }
+
+    #[test]
+    fn near_a_side_of_the_screen_it_keeps_within_it() {
+        assert_eq!(
+            pill_place(rect(0, 300, 100, 400), 160, 40, WORK, 1.0),
+            rect(0, 410, 160, 450)
+        );
+        assert_eq!(
+            pill_place(rect(1850, 300, 1920, 400), 160, 40, WORK, 1.0),
+            rect(1760, 410, 1920, 450)
+        );
+        // A screen left of the primary, with a taskbar at its left.
+        let work = rect(-2500, 0, -1920, 1400);
+        assert_eq!(
+            pill_place(rect(-2560, 300, -2400, 400), 160, 40, work, 1.0),
+            rect(-2500, 410, -2340, 450)
+        );
+    }
+
+    #[test]
+    fn the_gap_scales_with_the_screen_and_the_line_does_not() {
+        // 2 of line and 12 of gap at 150%.
+        assert_eq!(
+            pill_place(rect(1000, 600, 1200, 750), 240, 60, WORK, 1.5),
+            rect(980, 764, 1220, 824)
+        );
+        assert_eq!(
+            pill_place(rect(1000, 600, 1200, 1000), 240, 60, WORK, 1.5),
+            rect(980, 526, 1220, 586)
+        );
+    }
+}

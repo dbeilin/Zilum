@@ -123,7 +123,7 @@ pub enum Refusal {
 /// Why `pressed` cannot go in `mode`'s field while the fields hold `fields`, one per mode in
 /// `Mode::ALL`, or `None` when it can. `None`, a cleared field, is always allowed.
 pub fn refusal(
-    fields: [Option<Hotkey>; 4],
+    fields: [Option<Hotkey>; Mode::COUNT],
     mode: Mode,
     pressed: Option<Hotkey>,
 ) -> Option<Refusal> {
@@ -185,21 +185,31 @@ impl fmt::Display for Hotkey {
     }
 }
 
-/// What a hotkey starts: the three capture modes and Copy text, in the order of their hotkeys'
-/// fields; an earlier field keeps a combination a later one repeats.
+/// What a hotkey starts: the three capture modes, Copy text and Record, in the order of their
+/// hotkeys' fields; an earlier field keeps a combination a later one repeats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Capture,
     Screen,
     Window,
     CopyText,
+    Record,
 }
 
 impl Mode {
-    pub const ALL: [Mode; 4] = [Mode::Capture, Mode::Screen, Mode::Window, Mode::CopyText];
+    /// How many modes there are, and so hotkeys.
+    pub const COUNT: usize = 5;
+
+    pub const ALL: [Mode; Mode::COUNT] = [
+        Mode::Capture,
+        Mode::Screen,
+        Mode::Window,
+        Mode::CopyText,
+        Mode::Record,
+    ];
 
     /// The hotkeys each mode has when the settings file does not say otherwise.
-    pub const DEFAULTS: [Option<Hotkey>; 4] = [
+    pub const DEFAULTS: [Option<Hotkey>; Mode::COUNT] = [
         Some(Hotkey::PRINTSCREEN),
         Some(Hotkey {
             shift: true,
@@ -209,12 +219,16 @@ impl Mode {
         // want one.
         None,
         None,
+        // Recordings are rare enough that the tray is the way in.
+        None,
     ];
 }
 
 /// `hotkeys`, one per mode in `Mode::ALL`, with each combination that repeats an earlier mode's
 /// replaced by `None`, so Zilum never competes with itself, and whether any was.
-pub fn without_repeats(mut hotkeys: [Option<Hotkey>; 4]) -> ([Option<Hotkey>; 4], bool) {
+pub fn without_repeats(
+    mut hotkeys: [Option<Hotkey>; Mode::COUNT],
+) -> ([Option<Hotkey>; Mode::COUNT], bool) {
     let mut repeated = false;
     for later in 1..hotkeys.len() {
         if hotkeys[later].is_some() && hotkeys[..later].contains(&hotkeys[later]) {
@@ -234,6 +248,7 @@ impl Mode {
             Mode::Screen => "Screen capture",
             Mode::Window => "Window capture",
             Mode::CopyText => "Copy text",
+            Mode::Record => "Record",
         }
     }
 }
@@ -287,7 +302,7 @@ impl Key {
 mod tests {
     use super::*;
 
-    fn hotkeys(texts: [&str; 4]) -> [Option<Hotkey>; 4] {
+    fn hotkeys(texts: [&str; 5]) -> [Option<Hotkey>; 5] {
         texts.map(|text| Hotkey::parse(text).unwrap())
     }
 
@@ -389,20 +404,27 @@ mod tests {
                 "PrintScreen",
                 "PrintScreen",
                 "Ctrl+Shift+PrintScreen",
+                "None",
                 "None"
             ])),
             (
-                hotkeys(["PrintScreen", "None", "Ctrl+Shift+PrintScreen", "None"]),
+                hotkeys([
+                    "PrintScreen",
+                    "None",
+                    "Ctrl+Shift+PrintScreen",
+                    "None",
+                    "None"
+                ]),
                 true
             )
         );
         assert_eq!(
-            without_repeats(hotkeys(["Alt+F3", "F12", "alt+f3", "F9"])),
-            (hotkeys(["Alt+F3", "F12", "None", "F9"]), true)
+            without_repeats(hotkeys(["Alt+F3", "F12", "alt+f3", "F9", "None"])),
+            (hotkeys(["Alt+F3", "F12", "None", "F9", "None"]), true)
         );
         assert_eq!(
-            without_repeats(hotkeys(["F12", "F12", "F12", "F12"])),
-            (hotkeys(["F12", "None", "None", "None"]), true)
+            without_repeats(hotkeys(["F12", "F12", "F12", "F12", "None"])),
+            (hotkeys(["F12", "None", "None", "None", "None"]), true)
         );
     }
 
@@ -413,9 +435,10 @@ mod tests {
             "Shift+PrintScreen",
             "Ctrl+Shift+PrintScreen",
             "Ctrl+Alt+T",
+            "None",
         ]);
         assert_eq!(without_repeats(different), (different, false));
-        let nones = hotkeys(["None", "None", "Ctrl+R", "None"]);
+        let nones = hotkeys(["None", "None", "Ctrl+R", "None", "None"]);
         assert_eq!(without_repeats(nones), (nones, false));
     }
 
@@ -425,7 +448,7 @@ mod tests {
 
     #[test]
     fn a_bare_letter_or_digit_in_a_field_needs_a_modifier() {
-        let fields = [None; 4];
+        let fields = [None; 5];
         for key in [Key::Letter('R'), Key::Digit('5')] {
             assert_eq!(
                 refusal(fields, Mode::Capture, Some(Hotkey::bare(key))),
@@ -440,7 +463,7 @@ mod tests {
 
     #[test]
     fn a_combination_in_another_field_is_refused_naming_that_mode() {
-        let fields = hotkeys(["PrintScreen", "Shift+PrintScreen", "Alt+F3", "None"]);
+        let fields = hotkeys(["PrintScreen", "Shift+PrintScreen", "Alt+F3", "None", "None"]);
         assert_eq!(
             refusal(fields, Mode::Window, pressed("Shift+PrintScreen")),
             Some(Refusal::UsedFor(Mode::Screen))
@@ -458,7 +481,7 @@ mod tests {
     /// What `mode`'s field says under it when `text` is pressed in it while the fields hold
     /// `fields`, or `None` when it takes the combination. A bare letter or digit can be pressed
     /// though the file cannot hold it.
-    fn says(fields: [&str; 4], mode: Mode, text: &str) -> Option<String> {
+    fn says(fields: [&str; 5], mode: Mode, text: &str) -> Option<String> {
         let pressed = Hotkey::parse(text)
             .unwrap_or_else(|Invalid| Some(Hotkey::bare(Key::parse(text).unwrap())));
         refusal(hotkeys(fields), mode, pressed).map(|refusal| message(refusal, pressed))
@@ -466,7 +489,7 @@ mod tests {
 
     #[test]
     fn a_refused_combination_says_why_under_its_field() {
-        let fields = ["Ctrl+Alt+R", "Shift+PrintScreen", "None", "None"];
+        let fields = ["Ctrl+Alt+R", "Shift+PrintScreen", "None", "None", "None"];
         assert_eq!(
             says(fields, Mode::Capture, "R").as_deref(),
             Some("Add Ctrl, Alt or Shift")
@@ -485,7 +508,7 @@ mod tests {
         );
         assert_eq!(
             says(
-                ["F12", "Shift+PrintScreen", "Alt+F3", "None"],
+                ["F12", "Shift+PrintScreen", "Alt+F3", "None", "None"],
                 Mode::Capture,
                 "Alt+F3"
             )
@@ -500,7 +523,13 @@ mod tests {
 
     #[test]
     fn the_copy_text_field_refuses_and_is_refused_like_the_other_three() {
-        let fields = ["PrintScreen", "Shift+PrintScreen", "F9", "Ctrl+Alt+T"];
+        let fields = [
+            "PrintScreen",
+            "Shift+PrintScreen",
+            "F9",
+            "Ctrl+Alt+T",
+            "None",
+        ];
         assert_eq!(
             says(fields, Mode::Capture, "Ctrl+Alt+T").as_deref(),
             Some("Already used for Copy text")
@@ -527,6 +556,54 @@ mod tests {
     }
 
     #[test]
+    fn the_record_field_refuses_and_is_refused_like_the_other_four() {
+        let fields = [
+            "PrintScreen",
+            "Shift+PrintScreen",
+            "None",
+            "Ctrl+Alt+T",
+            "Ctrl+PrintScreen",
+        ];
+        assert_eq!(
+            says(fields, Mode::Capture, "Ctrl+PrintScreen").as_deref(),
+            Some("Already used for Record")
+        );
+        assert_eq!(
+            says(fields, Mode::CopyText, "Ctrl+PrintScreen").as_deref(),
+            Some("Already used for Record")
+        );
+        assert_eq!(
+            says(fields, Mode::Record, "Ctrl+Alt+T").as_deref(),
+            Some("Already used for Copy text")
+        );
+        assert_eq!(
+            says(fields, Mode::Record, "R").as_deref(),
+            Some("Add Ctrl, Alt or Shift")
+        );
+        assert_eq!(says(fields, Mode::Record, "Ctrl+PrintScreen"), None);
+        assert_eq!(says(fields, Mode::Record, "F11"), None);
+        assert_eq!(says(fields, Mode::Record, "None"), None);
+    }
+
+    #[test]
+    fn a_record_hotkey_repeating_any_of_the_other_four_is_left_with_none() {
+        for earlier in 0..4 {
+            let mut texts = ["None"; 5];
+            texts[earlier] = "Alt+F3";
+            texts[4] = "alt+f3";
+            let mut expected = texts;
+            expected[4] = "None";
+            assert_eq!(
+                without_repeats(hotkeys(texts)),
+                (hotkeys(expected), true),
+                "{earlier}"
+            );
+        }
+        let all = hotkeys(["PrintScreen", "F9", "F10", "F11", "F12"]);
+        assert_eq!(without_repeats(all), (all, false));
+    }
+
+    #[test]
     fn a_combination_another_app_owns_says_so_and_printscreen_names_snipping_tool() {
         assert_eq!(
             message(Refusal::InUse, pressed("Alt+F3")),
@@ -546,7 +623,7 @@ mod tests {
 
     #[test]
     fn a_fields_own_combination_and_none_are_never_repeats() {
-        let fields = hotkeys(["None", "Shift+PrintScreen", "None", "None"]);
+        let fields = hotkeys(["None", "Shift+PrintScreen", "None", "None", "None"]);
         assert_eq!(
             refusal(fields, Mode::Screen, pressed("Shift+PrintScreen")),
             None

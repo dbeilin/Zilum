@@ -323,30 +323,14 @@ fn draw(
 ) -> Result<()> {
     // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     let brush = |rgb| unsafe { context.CreateSolidColorBrush(&color(rgb), None) };
-    let (border, fill, ink) = (
-        brush(palette.tooltip_border)?,
-        brush(palette.bar)?,
-        brush(palette.text)?,
-    );
-    let pill = |inset: f32| D2D1_ROUNDED_RECT {
-        rect: D2D_RECT_F {
-            left: inset,
-            top: inset,
-            right: width - inset,
-            bottom: height - inset,
-        },
-        radiusX: height / 2.0 - inset,
-        radiusY: height / 2.0 - inset,
-    };
+    let (border, ink) = (brush(palette.tooltip_border)?, brush(palette.text)?);
     let size = bar::size(text)?;
     let before = chip.map_or(0.0, |_| chip_width(size.Y, scale));
     let left = ((width - before - size.X) / 2.0).round();
     let top = ((height - size.Y) / 2.0).round();
+    draw_pill(context, width, height, palette)?;
     // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {
-        context.Clear(Some(&D2D1_COLOR_F::default()));
-        context.FillRoundedRectangle(&pill(0.0), &border);
-        context.FillRoundedRectangle(&pill(1.0), &fill);
         if let Some(chip) = chip {
             let side = size.Y.round();
             let radius = (CHIP_RADIUS * scale).round();
@@ -372,6 +356,36 @@ fn draw(
             &ink,
             D2D1_DRAW_TEXT_OPTIONS_NONE,
         );
+    }
+    Ok(())
+}
+
+/// Clears a surface `width` by `height` and draws a Notice's pill over the whole of it, in the
+/// bar's colour inside a hairline, its ends fully round. Only between `BeginDraw` and `EndDraw`.
+pub fn draw_pill(
+    context: &ID2D1DeviceContext,
+    width: f32,
+    height: f32,
+    palette: &Palette,
+) -> Result<()> {
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
+    let brush = |rgb| unsafe { context.CreateSolidColorBrush(&color(rgb), None) };
+    let (border, fill) = (brush(palette.tooltip_border)?, brush(palette.bar)?);
+    let pill = |inset: f32| D2D1_ROUNDED_RECT {
+        rect: D2D_RECT_F {
+            left: inset,
+            top: inset,
+            right: width - inset,
+            bottom: height - inset,
+        },
+        radiusX: height / 2.0 - inset,
+        radiusY: height / 2.0 - inset,
+    };
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
+    unsafe {
+        context.Clear(Some(&D2D1_COLOR_F::default()));
+        context.FillRoundedRectangle(&pill(0.0), &border);
+        context.FillRoundedRectangle(&pill(1.0), &fill);
     }
     Ok(())
 }
