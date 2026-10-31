@@ -1,14 +1,15 @@
 //! Recording: frames of the box's screen, cropped to the box and with the pointer in them,
-//! written into a looping GIF in the save folder. Frames are captured on one thread and encoded
-//! on another, and neither holds up the message thread: a frame that comes while the encoder is
-//! still on the one before is skipped, never queued, so at most a couple are ever held.
+//! written into a looping GIF in the save folder and put on the clipboard as a file. Frames are
+//! captured on one thread and encoded on another, and neither holds up the message thread: a
+//! frame that comes while the encoder is still on the one before is skipped, never queued, so at
+//! most a couple are ever held.
 
 use std::{
     borrow::Cow,
     collections::HashMap,
     fs::{self, File},
     io::{self, BufWriter, ErrorKind},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -26,7 +27,7 @@ use windows::Win32::{
 
 use crate::{
     capture::Stream,
-    graphics,
+    clipboard, graphics,
     image::Region,
     pixels,
     save::{self, GIF},
@@ -110,8 +111,8 @@ fn hundredths(at: Duration) -> u32 {
 pub enum Outcome {
     /// No frame had come, so nothing was saved.
     Nothing,
-    /// The GIF is at this path.
-    Saved(PathBuf),
+    /// The GIF is at `file`, and on the clipboard too if `copied`.
+    Saved { file: PathBuf, copied: bool },
     /// The GIF could not be written. It was to be called this.
     Failed(String),
 }
@@ -146,6 +147,16 @@ impl Recorder {
     pub fn stop(self) {
         let _ = self.stop.send(Instant::now());
     }
+}
+
+/// What the Notice after a recording saved as `file` reads: "Copied and saved as" when the file
+/// went on the clipboard too, else "Saved as", as after a Save.
+pub fn notice_text(file: &Path, copied: bool) -> String {
+    if !copied {
+        return save::notice_text(file);
+    }
+    let name = file.file_name().unwrap_or(file.as_os_str());
+    format!("Copied and saved as {}", name.to_string_lossy())
 }
 
 /// The outcome posted with `WM_RECORDED`, from its `lparam`.
@@ -355,7 +366,8 @@ fn crop(pixels: &[u8], width: u32, part: Region) -> Vec<u8> {
 }
 
 /// Writes each frame from `jobs` into a GIF `width` by `height` until the end comes, clearing
-/// `busy` after each, then puts the GIF in the save folder under a name from `taken`.
+/// `busy` after each, then puts the GIF in the save folder under a name from `taken`, and the
+/// file on the clipboard.
 fn encode(
     jobs: Receiver<Job>,
     busy: &AtomicBool,
@@ -393,7 +405,11 @@ fn encode(
         None => Outcome::Nothing,
         Some(Err(_)) => Outcome::Failed(name),
         Some(Ok(writing)) => match writing.finish(last, &taken, &mut name) {
-            Ok(path) => Outcome::Saved(path),
+            Ok(file) => {
+                // Only once the GIF is in its place, so nothing is copied for a failed save.
+                let copied = clipboard::put_file(&file).is_ok();
+                Outcome::Saved { file, copied }
+            }
             Err(_) => Outcome::Failed(name),
         },
     }
@@ -739,5 +755,25 @@ mod tests {
     #[test]
     fn a_recording_with_no_frame_writes_nothing() {
         assert_eq!(written(&[], 5000), []);
+    }
+
+    #[test]
+    fn the_notice_says_whether_the_gif_was_copied_too() {
+        let file = Path::new(r"C:\Users\me\Pictures\Zilum\Zilum 2026-10-31 14.05.09.gif");
+        assert_eq!(
+            notice_text(file, true),
+            "Copied and saved as Zilum 2026-10-31 14.05.09.gif"
+        );
+        assert_eq!(
+            notice_text(file, false),
+            "Saved as Zilum 2026-10-31 14.05.09.gif"
+        );
+        assert_eq!(
+            notice_text(
+                Path::new(r"\\server\share\Clips\Zilum 2026-10-31 14.05.09-1.gif"),
+                true
+            ),
+            "Copied and saved as Zilum 2026-10-31 14.05.09-1.gif"
+        );
     }
 }

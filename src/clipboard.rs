@@ -1,7 +1,9 @@
 //! Putting a capture on the clipboard, as a bitmap and a PNG, or text, from a worker thread so
-//! encoding and a busy clipboard never hold up the UI.
+//! encoding and a busy clipboard never hold up the UI; and a saved file, as a file drop.
 
 use std::{
+    os::windows::ffi::OsStrExt,
+    path::Path,
     sync::{
         Arc, OnceLock,
         mpsc::{Sender, channel},
@@ -18,7 +20,7 @@ use windows::{
                 SetClipboardData,
             },
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
-            Ole::{CF_DIBV5, CF_UNICODETEXT},
+            Ole::{CF_DIBV5, CF_HDROP, CF_UNICODETEXT},
         },
         UI::WindowsAndMessaging::{CreateWindowExW, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE},
     },
@@ -112,6 +114,28 @@ fn write_text(text: &str) -> Result<()> {
         .flat_map(u16::to_le_bytes)
         .collect();
     hand_over(&[(CF_UNICODETEXT.0 as u32, &bytes)])
+}
+
+/// Puts `file` on the clipboard now as a file drop, the format Explorer's Copy puts there, in
+/// place of whatever was there. It may wait a moment for another app to let the clipboard go, so
+/// it is for a worker thread. It is not queued behind `copy`: a recording's own thread calls it,
+/// and says how it went in the recording's Notice rather than in a notification.
+pub fn put_file(file: &Path) -> Result<()> {
+    // A DROPFILES header, its fields little-endian 32-bit: where the list starts, just after the
+    // header; the drop point and whether it is in the non-client area, neither used; and that
+    // the list is UTF-16. Then the list: the one path, closed by a null, and a null closing it.
+    const HEADER: u32 = 20;
+    let mut bytes: Vec<u8> = [HEADER, 0, 0, 0, 1]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    bytes.extend(
+        file.as_os_str()
+            .encode_wide()
+            .chain([0, 0])
+            .flat_map(u16::to_le_bytes),
+    );
+    hand_over(&[(CF_HDROP.0 as u32, &bytes)])
 }
 
 /// Empties the clipboard and hands it each of `formats`, as its bytes.

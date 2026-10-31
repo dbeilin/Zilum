@@ -349,7 +349,8 @@ fn stop_recording() {
 }
 
 /// Closes the box and its pill once a recording has ended as `outcome` says, and tells how it
-/// went: a Notice for a GIF saved, a notification for one that could not be.
+/// went: a Notice for a GIF saved, saying whether it was copied too, or a notification for one
+/// that could not be saved.
 fn finish(outcome: Outcome) {
     let Some((screen, tray)) =
         ARMED.with_borrow(|armed| armed.as_ref().map(|armed| (armed.screen, armed.tray)))
@@ -358,7 +359,9 @@ fn finish(outcome: Outcome) {
     };
     disarm();
     match outcome {
-        Outcome::Saved(path) => notice::show(&save::notice_text(&path), screen),
+        Outcome::Saved { file, copied } => {
+            notice::show(&recording::notice_text(&file, copied), screen)
+        }
         Outcome::Failed(name) => save::notify_failure(tray, &name),
         Outcome::Nothing => {}
     }
