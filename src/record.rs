@@ -63,7 +63,6 @@ use crate::{
     bar::{self, Paint, Tint, Tone},
     graphics, notice,
     recording::{self, Outcome, Recorder},
-    save,
     selection::Selection,
     settings::{self, Settings},
     theme::{self, Palette},
@@ -157,7 +156,7 @@ struct Armed {
     pill: Pill,
     /// The window the user was in, which gets the front back when the pill had it.
     previous: Option<HWND>,
-    /// The tray window, which says when the GIF could not be saved.
+    /// The tray window, which says how the recording ended.
     tray: HWND,
     /// The recording, from the click on Record until its GIF is written.
     recorder: Option<Recorder>,
@@ -396,7 +395,7 @@ pub fn advance() {
 }
 
 /// Ends Record because Zilum is leaving: an armed box closes, and a recording stops and its GIF
-/// is saved and copied before this returns. No Notice says so, since Zilum is leaving with it.
+/// is saved and copied before this returns. Nothing says so, since Zilum is leaving with it.
 pub fn end() {
     let Some(mut armed) = ARMED.take() else {
         return;
@@ -413,8 +412,8 @@ pub fn end() {
 /// Puts the box around `chosen` on `screen`, and the pill beside it, on the live desktop, and
 /// gives the front back to `previous`, the window the user was in: neither takes the keyboard.
 /// A window clicked is boxed at its visible frame as it is now, within `screen`. Does nothing if
-/// a box is already armed, or if nothing of `chosen` is on `screen`. `tray` says when a GIF could
-/// not be saved.
+/// a box is already armed, or if nothing of `chosen` is on `screen`. `tray` says how a recording
+/// ended.
 pub fn arm(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWND) {
     if state() == State::Idle
         && let Ok(armed) = Armed::new(screen, chosen, previous, tray)
@@ -491,12 +490,10 @@ fn screen_at(bounds: RECT) -> Option<HMONITOR> {
 }
 
 /// Closes the box and its pill once a recording has ended as `outcome` says, and tells how it
-/// went: a Notice for a GIF saved, saying whether it was copied too, or a notification for one
-/// that could not be saved.
+/// went from the tray: where a GIF was saved, which a click on the notification shows, why one
+/// could not be, or that nothing was recorded.
 fn finish(outcome: Outcome) {
-    let Some((screen, tray)) =
-        ARMED.with_borrow(|armed| armed.as_ref().map(|armed| (armed.screen, armed.tray)))
-    else {
+    let Some(tray) = ARMED.with_borrow(|armed| armed.as_ref().map(|armed| armed.tray)) else {
         return;
     };
     disarm();
@@ -504,10 +501,10 @@ fn finish(outcome: Outcome) {
     retire_hint();
     match outcome {
         Outcome::Saved { file, copied } => {
-            notice::show(&recording::notice_text(&file, copied), screen)
+            crate::notify_file(tray, &recording::saved_text(&file, copied), &file)
         }
-        Outcome::Failed(name) => save::notify_failure(tray, &name),
-        Outcome::Nothing => {}
+        Outcome::Failed { name, why } => crate::notify(tray, &recording::failed_text(&name, why)),
+        Outcome::Nothing => crate::notify(tray, "Nothing was recorded"),
     }
 }
 

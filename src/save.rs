@@ -28,7 +28,8 @@ use windows::{
             Shell::{
                 Common::COMDLG_FILTERSPEC, FOS_FORCEFILESYSTEM, FOS_NOTESTFILECREATE,
                 FOS_PICKFOLDERS, FileOpenDialog, FileSaveDialog, IFileDialog, IFileOpenDialog,
-                IFileSaveDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+                IFileSaveDialog, ILCreateFromPathW, ILFree, IShellItem,
+                SHCreateItemFromParsingName, SHOpenFolderAndSelectItems, SIGDN_FILESYSPATH,
                 ShellExecuteW,
             },
             WindowsAndMessaging::{PostMessageW, SW_SHOWNORMAL},
@@ -376,6 +377,25 @@ pub fn open_folder() {
                     SW_SHOWNORMAL,
                 )
             };
+        }
+    });
+}
+
+/// Opens the folder `file` is in, in Explorer, with `file` chosen; or the save folder, if `file`
+/// is no longer there.
+pub fn show_file(file: PathBuf) {
+    in_shell(move || {
+        // SAFETY: Win32 calls taking pointers to live locals; the item list is freed once used.
+        let shown = unsafe {
+            let item = ILCreateFromPathW(&HSTRING::from(file.as_path()));
+            !item.is_null() && {
+                let shown = SHOpenFolderAndSelectItems(item, None, 0).is_ok();
+                ILFree(Some(item));
+                shown
+            }
+        };
+        if !shown {
+            open_folder();
         }
     });
 }

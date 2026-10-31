@@ -39,7 +39,12 @@ mod wallpaper;
 mod win32;
 mod window;
 
-use std::{cell::Cell, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use windows::{
     Graphics::Capture::GraphicsCaptureItem,
@@ -65,8 +70,8 @@ use windows::{
             Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey},
             Shell::{
                 NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE,
-                NIM_MODIFY, NIM_SETVERSION, NIN_SELECT, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
-                Shell_NotifyIconW,
+                NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT, NOTIFYICON_VERSION_4,
+                NOTIFYICONDATAW, Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
                 AppendMenuW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DestroyMenu,
@@ -117,6 +122,8 @@ thread_local! {
     /// window the user was in, and where Record was when the menu showed.
     static WAITING: Cell<Option<(Mode, Option<HWND>, record::State)>> =
         const { Cell::new(None) };
+    /// The file the last notification was about, which a click on it shows in its folder.
+    static NOTIFIED_FILE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 /// What a selection on the overlay is for.
@@ -265,6 +272,11 @@ unsafe extern "system" fn window_proc(
                         window::valid(window::before_taskbar()),
                         Purpose::Capture,
                     )
+                }
+                NIN_BALLOONUSERCLICK => {
+                    if let Some(file) = NOTIFIED_FILE.with_borrow(Clone::clone) {
+                        save::show_file(file);
+                    }
                 }
                 WM_CONTEXTMENU => {
                     // The click position in screen coordinates is packed into wparam.
@@ -820,6 +832,17 @@ fn running(capture: Option<Hotkey>, took_over: bool) -> String {
 }
 
 fn notify(hwnd: HWND, text: &str) {
+    NOTIFIED_FILE.set(None);
+    show_notification(hwnd, text);
+}
+
+/// Notifies `text` about `file`, which a click on the notification shows in its folder.
+fn notify_file(hwnd: HWND, text: &str, file: &Path) {
+    NOTIFIED_FILE.set(Some(file.to_owned()));
+    show_notification(hwnd, text);
+}
+
+fn show_notification(hwnd: HWND, text: &str) {
     let mut nid = tray_data(hwnd);
     nid.uFlags = NIF_INFO;
     copy_wide("Zilum", &mut nid.szInfoTitle);

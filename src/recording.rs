@@ -114,8 +114,46 @@ pub enum Outcome {
     Nothing,
     /// The GIF is at `file`, and on the clipboard too if `copied`.
     Saved { file: PathBuf, copied: bool },
-    /// The GIF could not be written. It was to be called this.
-    Failed(String),
+    /// The GIF, which was to be called `name`, could not be written, for the reason `why` gives.
+    Failed { name: String, why: Why },
+}
+
+/// Why a GIF could not be written, as far as the user can do something about it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// The save folder refused the file.
+    Unwritable,
+    /// The disk had no room for it.
+    Full,
+    /// Anything else.
+    Other,
+}
+
+/// Why writing failed with `error`.
+fn why(error: &io::Error) -> Why {
+    match error.kind() {
+        ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => Why::Unwritable,
+        ErrorKind::StorageFull | ErrorKind::QuotaExceeded => Why::Full,
+        _ => Why::Other,
+    }
+}
+
+/// `error` as an I/O error, with its kind when it carries a Win32 error code.
+fn os_error(error: windows::core::Error) -> io::Error {
+    let code = error.code().0 as u32;
+    if code & 0xFFFF_0000 == 0x8007_0000 {
+        io::Error::from_raw_os_error((code & 0xFFFF) as i32)
+    } else {
+        io::Error::other(error)
+    }
+}
+
+/// `error` as an I/O error, the one it wraps if it wraps one.
+fn gif_error(error: gif::EncodingError) -> io::Error {
+    match error {
+        gif::EncodingError::Io(error) => error,
+        error => io::Error::other(error),
+    }
 }
 
 /// A recording, from its start until its GIF is written. Dropping it stops the recording, as
@@ -161,14 +199,29 @@ impl Recorder {
     }
 }
 
-/// What the Notice after a recording saved as `file` reads: "Copied and saved as" when the file
-/// went on the clipboard too, else "Saved as", as after a Save.
-pub fn notice_text(file: &Path, copied: bool) -> String {
-    if !copied {
-        return save::notice_text(file);
+/// What the notification after a recording saved as `file` reads: "Copied and saved as" when the
+/// file went on the clipboard too, else "Saved as", as after a Save, and then the folder it is in.
+pub fn saved_text(file: &Path, copied: bool) -> String {
+    let saved = if copied {
+        let name = file.file_name().unwrap_or(file.as_os_str());
+        format!("Copied and saved as {}", name.to_string_lossy())
+    } else {
+        save::notice_text(file)
+    };
+    match file.parent() {
+        Some(folder) => format!("{saved}\nin {}", folder.display()),
+        None => saved,
     }
-    let name = file.file_name().unwrap_or(file.as_os_str());
-    format!("Copied and saved as {}", name.to_string_lossy())
+}
+
+/// What the notification after a recording whose GIF, to be called `name`, could not be written
+/// reads, saying why when the user can do something about it.
+pub fn failed_text(name: &str, why: Why) -> String {
+    match why {
+        Why::Unwritable => format!("Couldn't save {name}: the save folder can't be written to"),
+        Why::Full => format!("Couldn't save {name}: the disk is full"),
+        Why::Other => format!("Couldn't save {name}"),
+    }
 }
 
 /// The outcome posted with `WM_RECORDED`, from its `lparam`.
@@ -415,14 +468,20 @@ fn encode(
     }
     match gif {
         None => Outcome::Nothing,
-        Some(Err(_)) => Outcome::Failed(name),
+        Some(Err(error)) => Outcome::Failed {
+            name,
+            why: why(&error),
+        },
         Some(Ok(writing)) => match writing.finish(last, &taken, &mut name) {
             Ok(file) => {
                 // Only once the GIF is in its place, so nothing is copied for a failed save.
                 let copied = clipboard::put_file(&file).is_ok();
                 Outcome::Saved { file, copied }
             }
-            Err(_) => Outcome::Failed(name),
+            Err(error) => Outcome::Failed {
+                name,
+                why: why(&error),
+            },
         },
     }
 }
@@ -450,7 +509,7 @@ impl Gif {
     /// A GIF `width` by `height` that loops forever, begun in the save folder, which is made if
     /// it is missing.
     fn create(width: u16, height: u16) -> io::Result<Gif> {
-        let folder = save::folder().map_err(io::Error::other)?;
+        let folder = save::folder().map_err(os_error)?;
         // Only one recording runs at a time, so a file of this name already there is the remains
         // of one that never finished.
         let temp = folder.join("Zilum recording.tmp");
@@ -476,7 +535,7 @@ impl Gif {
             }),
             Err(error) => {
                 let _ = fs::remove_file(&temp);
-                Err(io::Error::other(error))
+                Err(gif_error(error))
             }
         }
     }
@@ -501,7 +560,7 @@ impl Gif {
         pending.frame.delay = pieces.next().unwrap_or(MIN_DELAY as u16);
         encoder
             .write_lzw_pre_encoded_frame(&pending.frame)
-            .map_err(io::Error::other)?;
+            .map_err(gif_error)?;
         for delay in pieces {
             // One pixel of the frame, as it is, carrying the rest of its delay.
             let repeat = gif::Frame {
@@ -514,7 +573,7 @@ impl Gif {
                 buffer: Cow::Borrowed(&[0]),
                 ..Default::default()
             };
-            encoder.write_frame(&repeat).map_err(io::Error::other)?;
+            encoder.write_frame(&repeat).map_err(gif_error)?;
         }
         Ok(())
     }
@@ -534,14 +593,13 @@ impl Gif {
         let encoder = self.encoder.take().ok_or(ErrorKind::Other)?;
         let file = encoder
             .into_inner()
-            .map_err(io::Error::other)?
+            .map_err(gif_error)?
             .into_inner()
             .map_err(|error| error.into_error())?;
         let synced = file.sync_all();
         drop(file);
         synced?;
-        let path = save::place_new(&self.temp, &self.folder, taken, GIF, name)
-            .map_err(io::Error::other)?;
+        let path = save::place_new(&self.temp, &self.folder, taken, GIF, name).map_err(os_error)?;
         self.placed = true;
         Ok(path)
     }
@@ -659,6 +717,9 @@ fn closest(palette: &[u8], colour: [u8; 3]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use windows::Win32::Foundation::E_FAIL;
+    use windows::core::HRESULT;
+
     use super::*;
 
     /// A frame arriving `ms` milliseconds in, changed or not and while the encoder was busy or not.
@@ -770,22 +831,58 @@ mod tests {
     }
 
     #[test]
-    fn the_notice_says_whether_the_gif_was_copied_too() {
+    fn the_saved_notification_says_whether_the_gif_was_copied_too_and_where_it_is() {
         let file = Path::new(r"C:\Users\me\Pictures\Zilum\Zilum 2026-10-31 14.05.09.gif");
         assert_eq!(
-            notice_text(file, true),
-            "Copied and saved as Zilum 2026-10-31 14.05.09.gif"
+            saved_text(file, true),
+            "Copied and saved as Zilum 2026-10-31 14.05.09.gif\nin C:\\Users\\me\\Pictures\\Zilum"
         );
         assert_eq!(
-            notice_text(file, false),
-            "Saved as Zilum 2026-10-31 14.05.09.gif"
+            saved_text(file, false),
+            "Saved as Zilum 2026-10-31 14.05.09.gif\nin C:\\Users\\me\\Pictures\\Zilum"
         );
         assert_eq!(
-            notice_text(
+            saved_text(
                 Path::new(r"\\server\share\Clips\Zilum 2026-10-31 14.05.09-1.gif"),
                 true
             ),
-            "Copied and saved as Zilum 2026-10-31 14.05.09-1.gif"
+            "Copied and saved as Zilum 2026-10-31 14.05.09-1.gif\nin \\\\server\\share\\Clips"
         );
+    }
+
+    #[test]
+    fn a_failed_notification_says_why_when_the_user_can_act_on_it() {
+        let name = "Zilum 2026-10-31 14.05.09.gif";
+        assert_eq!(
+            failed_text(name, Why::Unwritable),
+            "Couldn't save Zilum 2026-10-31 14.05.09.gif: the save folder can't be written to"
+        );
+        assert_eq!(
+            failed_text(name, Why::Full),
+            "Couldn't save Zilum 2026-10-31 14.05.09.gif: the disk is full"
+        );
+        assert_eq!(
+            failed_text(name, Why::Other),
+            "Couldn't save Zilum 2026-10-31 14.05.09.gif"
+        );
+    }
+
+    #[test]
+    fn a_refused_folder_reads_as_unwritable_and_no_room_as_full() {
+        // ERROR_ACCESS_DENIED, ERROR_WRITE_PROTECT, ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL and
+        // ERROR_PATH_NOT_FOUND, as the file calls give them.
+        let raw = |code| why(&io::Error::from_raw_os_error(code));
+        assert_eq!(raw(5), Why::Unwritable);
+        assert_eq!(raw(112), Why::Full);
+        assert_eq!(raw(39), Why::Full);
+        assert_eq!(raw(3), Why::Other);
+        // As the save folder and the move into it give them: HRESULTs of Win32 codes.
+        let hresult = |code: u32| why(&os_error(HRESULT((0x8007_0000 | code) as i32).into()));
+        assert_eq!(hresult(5), Why::Unwritable);
+        assert_eq!(hresult(112), Why::Full);
+        assert_eq!(why(&os_error(E_FAIL.into())), Why::Other);
+        // As the GIF encoder gives them.
+        let full = gif::EncodingError::Io(io::Error::from_raw_os_error(112));
+        assert_eq!(why(&gif_error(full)), Why::Full);
     }
 }
