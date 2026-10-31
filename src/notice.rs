@@ -328,7 +328,7 @@ fn draw(
     let before = chip.map_or(0.0, |_| chip_width(size.Y, scale));
     let left = ((width - before - size.X) / 2.0).round();
     let top = ((height - size.Y) / 2.0).round();
-    draw_pill(context, width, height, palette)?;
+    draw_pill(context, width, height, height / 2.0, palette)?;
     // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {
         if let Some(chip) = chip {
@@ -361,11 +361,13 @@ fn draw(
 }
 
 /// Clears a surface `width` by `height` and draws a Notice's pill over the whole of it, in the
-/// bar's colour inside a hairline, its ends fully round. Only between `BeginDraw` and `EndDraw`.
+/// bar's colour inside a hairline, its corners rounded by `radius` physical pixels: half its
+/// height for fully round ends. Only between `BeginDraw` and `EndDraw`.
 pub fn draw_pill(
     context: &ID2D1DeviceContext,
     width: f32,
     height: f32,
+    radius: f32,
     palette: &Palette,
 ) -> Result<()> {
     // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
@@ -378,8 +380,8 @@ pub fn draw_pill(
             right: width - inset,
             bottom: height - inset,
         },
-        radiusX: height / 2.0 - inset,
-        radiusY: height / 2.0 - inset,
+        radiusX: radius - inset,
+        radiusY: radius - inset,
     };
     // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
     unsafe {

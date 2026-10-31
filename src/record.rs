@@ -65,7 +65,7 @@ use crate::{
     recording::{self, Outcome, Recorder},
     save,
     selection::Selection,
-    settings,
+    settings::{self, Settings},
     theme::{self, Palette},
     win32, window,
 };
@@ -85,6 +85,10 @@ const PADDING: f32 = 12.0;
 const DOT: f32 = 10.0;
 const DOT_GAP: f32 = 8.0;
 const CLOSE_WIDTH: f32 = 32.0;
+/// Measurements in logical pixels of the first-time hint: either side of it, as a Notice's text
+/// has, and below it.
+const HINT_PADDING: f32 = 16.0;
+const HINT_BELOW: f32 = 10.0;
 /// ×, as the editor's command bar has it.
 const CLOSE_ICON: (char, &str) = ('\u{E8BB}', "\u{00D7}");
 /// Sent when the pointer leaves the pill. Only the `Win32_UI_Controls` feature's headers name
@@ -118,6 +122,16 @@ impl State {
             State::Idle => "Record",
             State::Armed => "Start recording",
             State::Recording => "Stop recording",
+        }
+    }
+
+    /// The line the pill carries under its buttons until a recording has completed: what the
+    /// next click does. The hotkey is not named, since Record has none by default.
+    fn hint(self) -> Option<&'static str> {
+        match self {
+            State::Idle => None,
+            State::Armed => Some("Set the screen up, then click Record"),
+            State::Recording => Some("Stop puts the GIF on your clipboard and in your save folder"),
         }
     }
 }
@@ -160,6 +174,9 @@ struct Pill {
     surface: IDCompositionSurface,
     text: bar::Text,
     stage: Stage,
+    /// Whether the pill carries the first-time hint, and its line for the stage it shows.
+    hints: bool,
+    hint: Option<IDWriteTextLayout>,
     scale: f32,
     /// The box's rectangle on the desktop and its screen's work area, which place the pill.
     chosen: RECT,
@@ -189,6 +206,14 @@ enum Stage {
 }
 
 impl Stage {
+    /// Where Record is while the pill shows this.
+    fn state(&self) -> State {
+        match self {
+            Stage::Armed { .. } => State::Armed,
+            Stage::Recording { .. } | Stage::Saving { .. } => State::Recording,
+        }
+    }
+
     /// The label at the pill's start, the one in its trailing button, if it has one, and whether
     /// the red dot is before the first.
     fn labels(&self) -> (&IDWriteTextLayout, Option<&IDWriteTextLayout>, bool) {
@@ -218,27 +243,41 @@ enum Button {
 }
 
 /// Where the pill's parts are, in physical pixels of its window: its start, which holds the red
-/// dot, if any, and a label, and its trailing button, if it has one.
+/// dot, if any, and a label, its trailing button, if it has one, and the line of the first-time
+/// hint under them, if it carries one.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Layout {
     width: i32,
     height: i32,
     lead: D2D_RECT_F,
     trail: Option<D2D_RECT_F>,
+    hint: Option<D2D_RECT_F>,
 }
 
 impl Layout {
     /// The pill at `scale` with its first label `label` physical pixels wide, after the red dot
     /// if `dot`, and then a button `trail` physical pixels wide, if any, all as tall as the pill
-    /// less its inset.
-    fn new(label: f32, dot: bool, trail: Option<f32>, scale: f32) -> Layout {
+    /// less its inset; and under them a hint of `hint`'s size, if any, which the pill grows to
+    /// hold, its buttons centred over a hint wider than they are.
+    fn new(label: f32, dot: bool, trail: Option<f32>, hint: Option<Vector2>, scale: f32) -> Layout {
         let px = |logical: f32| (logical * scale).round();
         let (inset, height) = (px(INSET), px(HEIGHT));
         let dot = if dot { px(DOT) + px(DOT_GAP) } else { 0.0 };
-        let lead_right = inset + px(PADDING) + dot + label.ceil() + px(PADDING);
+        let lead_width = px(PADDING) + dot + label.ceil() + px(PADDING);
+        let row = inset + lead_width + trail.map_or(0.0, |trail| px(BETWEEN) + trail) + inset;
+        let width = hint.map_or(row, |hint| {
+            row.max(px(HINT_PADDING) + hint.X.ceil() + px(HINT_PADDING))
+        });
+        let left = ((width - row) / 2.0).round() + inset;
         let (top, bottom) = (inset, height - inset);
+        let lead = D2D_RECT_F {
+            left,
+            top,
+            right: left + lead_width,
+            bottom,
+        };
         let trail = trail.map(|width| {
-            let left = lead_right + px(BETWEEN);
+            let left = lead.right + px(BETWEEN);
             D2D_RECT_F {
                 left,
                 top,
@@ -246,21 +285,23 @@ impl Layout {
                 bottom,
             }
         });
+        let hint = hint.map(|hint| D2D_RECT_F {
+            left: 0.0,
+            top: bottom,
+            right: width,
+            bottom: bottom + hint.Y.ceil(),
+        });
         Layout {
-            width: (trail.map_or(lead_right, |trail| trail.right) + inset) as i32,
-            height: height as i32,
-            lead: D2D_RECT_F {
-                left: inset,
-                top,
-                right: lead_right,
-                bottom,
-            },
+            width: width as i32,
+            height: hint.map_or(height, |hint| hint.bottom + px(HINT_BELOW)) as i32,
+            lead,
             trail,
+            hint,
         }
     }
 
-    /// The pill's layout at `scale` for what `stage` shows.
-    fn of(stage: &Stage, scale: f32) -> Result<Layout> {
+    /// The pill's layout at `scale` for what `stage` shows, with `hint` under it, if any.
+    fn of(stage: &Stage, hint: Option<&IDWriteTextLayout>, scale: f32) -> Result<Layout> {
         let px = |logical: f32| (logical * scale).round();
         let (label, trail, dot) = stage.labels();
         let trail = match stage {
@@ -269,7 +310,8 @@ impl Layout {
                 .map(|trail| Ok::<_, Error>(px(PADDING) + bar::size(trail)?.X.ceil() + px(PADDING)))
                 .transpose()?,
         };
-        Ok(Layout::new(bar::size(label)?.X, dot, trail, scale))
+        let hint = hint.map(bar::size).transpose()?;
+        Ok(Layout::new(bar::size(label)?.X, dot, trail, hint, scale))
     }
 
     /// The button at `at`, a client point, if any, of the pill's `buttons`, its start's and its
@@ -364,6 +406,7 @@ pub fn end() {
     close(armed);
     if let Some(recorder) = recorder {
         recorder.finish();
+        retire_hint();
     }
 }
 
@@ -457,12 +500,26 @@ fn finish(outcome: Outcome) {
         return;
     };
     disarm();
+    // Saved or not, as Quit's does.
+    retire_hint();
     match outcome {
         Outcome::Saved { file, copied } => {
             notice::show(&recording::notice_text(&file, copied), screen)
         }
         Outcome::Failed(name) => save::notify_failure(tray, &name),
         Outcome::Nothing => {}
+    }
+}
+
+/// Remembers that a recording has completed, saved or not, so no pill carries the first-time
+/// hint again, in this run or a later one.
+fn retire_hint() {
+    let current = settings::current();
+    if !current.record_hint_shown {
+        settings::store(Settings {
+            record_hint_shown: true,
+            ..current
+        });
     }
 }
 
@@ -535,7 +592,9 @@ impl Armed {
             bottom: bounds.top + area.top + area.height,
         };
         let line = line_window(chosen, bounds)?;
-        let pill = match Pill::new(screen, chosen, info.rcWork) {
+        // Until a recording has completed, the pill teaches what the overlay does not.
+        let hints = !settings::current().record_hint_shown;
+        let pill = match Pill::new(screen, chosen, info.rcWork, hints) {
             Ok(pill) => pill,
             Err(error) => {
                 if let Some(line) = line {
@@ -662,8 +721,8 @@ fn line_window(chosen: RECT, screen: RECT) -> Result<Option<HWND>> {
 
 impl Pill {
     /// The pill for the box around `chosen` on `screen`, whose work area is `work`, shown beside
-    /// it without the keyboard.
-    fn new(screen: HMONITOR, chosen: RECT, work: RECT) -> Result<Pill> {
+    /// it without the keyboard, carrying the first-time hint if `hints`.
+    fn new(screen: HMONITOR, chosen: RECT, work: RECT, hints: bool) -> Result<Pill> {
         let graphics = graphics::get()?;
         // SAFETY: Win32 and DirectComposition calls on live handles, interfaces and locals.
         unsafe {
@@ -675,7 +734,8 @@ impl Pill {
                 record: text.label("Record")?,
                 close: text.icon(CLOSE_ICON.0, CLOSE_ICON.1)?,
             };
-            let layout = Layout::of(&stage, scale)?;
+            let hint = hint_line(&text, hints, stage.state())?;
+            let layout = Layout::of(&stage, hint.as_ref(), scale)?;
             let at = pill_place(chosen, layout.width, layout.height, work, scale);
 
             // No redirection bitmap: the composition surface is all the window shows, with its
@@ -727,6 +787,8 @@ impl Pill {
                 surface,
                 text,
                 stage,
+                hints,
+                hint,
                 scale,
                 chosen,
                 work,
@@ -774,10 +836,19 @@ impl Pill {
 
     /// The pill's hairline and fill, and what its stage shows: Record with its red dot and ×, the
     /// red dot, the clock and Stop, or Saving…, each button tinted while the pointer is on it or
-    /// pressing it. Only between `BeginDraw` and `EndDraw`.
+    /// pressing it, and the hint under them, if it carries one. Only between `BeginDraw` and
+    /// `EndDraw`.
     fn draw(&self, context: &ID2D1DeviceContext, palette: &Palette) -> Result<()> {
         let layout = &self.layout;
-        notice::draw_pill(context, layout.width as f32, layout.height as f32, palette)?;
+        // Its corners are as round as a pill without a hint has its ends.
+        let corner = (HEIGHT * self.scale).round() / 2.0;
+        notice::draw_pill(
+            context,
+            layout.width as f32,
+            layout.height as f32,
+            corner,
+            palette,
+        )?;
         let paint = Paint::new(context, palette)?;
         let radius = (layout.lead.bottom - layout.lead.top) / 2.0;
         let (lead, trail) = self.stage.buttons();
@@ -829,6 +900,9 @@ impl Pill {
         paint.centred(label, &area, Tone::Text)?;
         if let (Some(trail), Some(area)) = (trail, &layout.trail) {
             paint.centred(trail, area, Tone::Text)?;
+        }
+        if let (Some(hint), Some(area)) = (&self.hint, &layout.hint) {
+            paint.centred(hint, area, Tone::Secondary)?;
         }
         Ok(())
     }
@@ -896,10 +970,14 @@ impl Pill {
         self.restage(stage)
     }
 
-    /// Shows `stage`: the pill takes the size it needs, placed beside the box as it was, and is
-    /// drawn again. When the buttons change, the one the pointer is on is found on its next move.
+    /// Shows `stage`, with its hint if the pill carries one: the pill takes the size it needs,
+    /// placed beside the box as it was, and is drawn again. When the buttons change, the one the
+    /// pointer is on is found on its next move.
     fn restage(&mut self, stage: Stage) -> Result<()> {
-        let layout = Layout::of(&stage, self.scale)?;
+        if stage.state() != self.stage.state() {
+            self.hint = hint_line(&self.text, self.hints, stage.state())?;
+        }
+        let layout = Layout::of(&stage, self.hint.as_ref(), self.scale)?;
         if stage.buttons() != self.stage.buttons() {
             self.hover = None;
             self.pressed = None;
@@ -936,6 +1014,14 @@ impl Pill {
         }
         self.layout = layout;
         self.present()
+    }
+}
+
+/// The first-time hint for `state` in `text`'s smaller size, if the pill carries one: `hints`.
+fn hint_line(text: &bar::Text, hints: bool, state: State) -> Result<Option<IDWriteTextLayout>> {
+    match state.hint() {
+        Some(hint) if hints => text.tip(hint).map(Some),
+        _ => Ok(None),
     }
 }
 
@@ -1123,6 +1209,52 @@ mod tests {
         assert_eq!(State::Idle.entry(), "Record");
         assert_eq!(State::Armed.entry(), "Start recording");
         assert_eq!(State::Recording.entry(), "Stop recording");
+    }
+
+    #[test]
+    fn the_first_time_hint_says_what_the_next_click_does_and_names_no_hotkey() {
+        assert_eq!(State::Idle.hint(), None);
+        assert_eq!(
+            State::Armed.hint(),
+            Some("Set the screen up, then click Record")
+        );
+        assert_eq!(
+            State::Recording.hint(),
+            Some("Stop puts the GIF on your clipboard and in your save folder")
+        );
+    }
+
+    #[test]
+    fn a_hint_grows_the_pill_below_its_buttons_and_centres_them_over_it() {
+        // Record's dot and a 50 wide label, then ×: 4 + 12 + 18 + 50 + 12, 2, 32 and 4.
+        let compact = Layout::new(50.0, true, Some(32.0), None, 1.0);
+        assert_eq!((compact.width, compact.height), (134, 40));
+        assert_eq!((compact.lead.left, compact.lead.right), (4.0, 96.0));
+        assert_eq!(compact.hint, None);
+
+        // A hint 300 wide and 15.5 tall: 16 either side, under the buttons, and 10 below.
+        let hint = Vector2 { X: 300.0, Y: 15.5 };
+        let grown = Layout::new(50.0, true, Some(32.0), Some(hint), 1.0);
+        assert_eq!((grown.width, grown.height), (332, 62));
+        assert_eq!((grown.lead.left, grown.lead.right), (103.0, 195.0));
+        let trail = grown.trail.unwrap();
+        assert_eq!((trail.left, trail.right), (197.0, 229.0));
+        let area = grown.hint.unwrap();
+        assert_eq!(
+            (area.left, area.top, area.right, area.bottom),
+            (0.0, 36.0, 332.0, 52.0)
+        );
+
+        // A hint narrower than the buttons leaves the pill as wide as they are.
+        let narrow = Layout::new(
+            50.0,
+            true,
+            Some(32.0),
+            Some(Vector2 { X: 60.0, Y: 16.0 }),
+            1.0,
+        );
+        assert_eq!((narrow.width, narrow.height), (134, 62));
+        assert_eq!(narrow.lead, compact.lead);
     }
 
     #[test]

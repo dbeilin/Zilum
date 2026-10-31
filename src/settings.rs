@@ -50,6 +50,8 @@ pub struct Settings {
     pub theme: Theme,
     /// What the next window capture puts around the window.
     pub window_background: Background,
+    /// Whether a recording has completed, after which the Record pill carries no hint.
+    pub record_hint_shown: bool,
 }
 
 impl Settings {
@@ -67,6 +69,7 @@ impl Settings {
             start_with_windows: false,
             theme: Theme::System,
             window_background: Background::TrimShadow,
+            record_hint_shown: false,
         }
     }
 }
@@ -220,6 +223,14 @@ fn parse(text: &str, default_folder: &Path) -> (Settings, bool) {
                     invalid = true;
                 }
             },
+            "record_hint_shown" => match value {
+                "true" => settings.record_hint_shown = true,
+                "false" => settings.record_hint_shown = false,
+                _ => {
+                    settings.record_hint_shown = false;
+                    invalid = true;
+                }
+            },
             "head" => match Head::ALL.into_iter().find(|h| head_name(*h) == value) {
                 Some(head) => settings.head = head,
                 None => {
@@ -328,10 +339,11 @@ fn to_text(settings: &Settings) -> String {
         settings.text_size.get(),
     );
     text += &format!(
-        "head={}\r\nfill={}\r\nblur={}\r\n",
+        "head={}\r\nfill={}\r\nblur={}\r\nrecord_hint_shown={}\r\n",
         head_name(settings.head),
         fill_name(settings.fill),
-        settings.blur.get()
+        settings.blur.get(),
+        settings.record_hint_shown
     );
     text
 }
@@ -588,6 +600,31 @@ mod tests {
     }
 
     #[test]
+    fn a_file_without_record_hint_shown_reads_it_as_false_silently() {
+        let (settings, invalid) = parse("hotkey_record=None\ncolor=blue\n");
+        assert!(!settings.record_hint_shown);
+        assert!(!invalid);
+        assert!(!defaults().record_hint_shown);
+    }
+
+    #[test]
+    fn record_hint_shown_is_read_as_true_or_false_and_anything_else_is_flagged() {
+        let (settings, invalid) = parse("record_hint_shown=true\n");
+        assert!(settings.record_hint_shown);
+        assert!(!invalid);
+        assert_eq!(parse("record_hint_shown=false\n"), (defaults(), false));
+        for value in ["True", "yes", "1", ""] {
+            assert_eq!(
+                parse(&format!(
+                    "record_hint_shown=true\nrecord_hint_shown={value}\n"
+                )),
+                (defaults(), true),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_record_hotkey_is_read_from_its_own_key() {
         let (settings, invalid) = parse("hotkey_record=Ctrl+PrintScreen\n");
         assert_eq!(
@@ -640,7 +677,7 @@ mod tests {
         );
         assert_eq!(
             to_text(&settings),
-            "hotkey_capture=Ctrl+Alt+Shift+R\r\nhotkey_screen=Shift+PrintScreen\r\nhotkey_window=None\r\nhotkey_text=None\r\nhotkey_record=None\r\nsave_folder=C:\\Users\\me\\Pictures\\Zilum\r\nstart_with_windows=true\r\ntheme=light\r\nwindow_background=trim\r\ncolor=blue\r\narrow_size=3\r\nrect_size=11\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=8\r\n"
+            "hotkey_capture=Ctrl+Alt+Shift+R\r\nhotkey_screen=Shift+PrintScreen\r\nhotkey_window=None\r\nhotkey_text=None\r\nhotkey_record=None\r\nsave_folder=C:\\Users\\me\\Pictures\\Zilum\r\nstart_with_windows=true\r\ntheme=light\r\nwindow_background=trim\r\ncolor=blue\r\narrow_size=3\r\nrect_size=11\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=8\r\nrecord_hint_shown=false\r\n"
         );
     }
 
@@ -673,6 +710,7 @@ mod tests {
                         theme,
                         // Each background with every theme.
                         window_background: Background::ALL[colour as usize % 3],
+                        record_hint_shown: step % 2 == 1,
                     };
                     assert_eq!(
                         parse(&to_text(&settings)),
