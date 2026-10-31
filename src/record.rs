@@ -25,10 +25,18 @@ use windows::{
             Dxgi::Common::{DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM},
             Gdi::{
                 COLOR_WINDOW, CombineRgn, CreateRectRgn, CreateSolidBrush, DeleteObject,
-                GetMonitorInfoW, HBRUSH, HMONITOR, MONITORINFO, RGN_DIFF, RGN_ERROR, SetWindowRgn,
+                GetMonitorInfoW, HBRUSH, HMONITOR, MONITOR_DEFAULTTONULL, MONITORINFO,
+                MonitorFromRect, RGN_DIFF, RGN_ERROR, SetWindowRgn,
             },
         },
-        System::{LibraryLoader::GetModuleHandleW, SystemInformation::GetLocalTime},
+        System::{
+            LibraryLoader::GetModuleHandleW,
+            RemoteDesktop::{
+                NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification,
+                WTSUnRegisterSessionNotification,
+            },
+            SystemInformation::GetLocalTime,
+        },
         UI::{
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             Input::KeyboardAndMouse::{
@@ -38,10 +46,11 @@ use windows::{
                 CreateWindowExW, GetForegroundWindow, HWND_TOPMOST, IDC_ARROW, LWA_ALPHA,
                 LoadCursorW, RegisterClassW, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
                 SetForegroundWindow, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
-                SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_KEYDOWN,
-                WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED,
-                WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-                WS_EX_TRANSPARENT, WS_POPUP,
+                SetWindowPos, WDA_EXCLUDEFROMCAPTURE, WM_CAPTURECHANGED, WM_DISPLAYCHANGE,
+                WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_QUERYENDSESSION,
+                WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+                WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+                WS_POPUP, WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK,
             },
         },
     },
@@ -91,6 +100,28 @@ thread_local! {
     static ARMED: RefCell<Option<Armed>> = const { RefCell::new(None) };
 }
 
+/// Where Record is, which the Record hotkey and the tray entry move on from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    /// No box is up.
+    Idle,
+    /// A box is armed, and nothing records yet.
+    Armed,
+    /// A recording runs, or has stopped and its GIF is being saved.
+    Recording,
+}
+
+impl State {
+    /// The tray entry, which names what choosing it does.
+    pub fn entry(self) -> &'static str {
+        match self {
+            State::Idle => "Record",
+            State::Armed => "Start recording",
+            State::Recording => "Stop recording",
+        }
+    }
+}
+
 /// What was chosen on the overlay for Record.
 pub enum Chosen {
     /// A region, in physical pixels of its screen.
@@ -104,6 +135,9 @@ struct Armed {
     /// The box: one screen, and a rectangle in its physical pixels. Nothing about it is logical.
     screen: HMONITOR,
     area: Selection,
+    /// The screen's bounds on the desktop when the box was drawn, which say whether it is still
+    /// there after the displays change.
+    bounds: RECT,
     /// The window that draws the box's line, unless all of the line is off the screen.
     line: Option<HWND>,
     pill: Pill,
@@ -111,7 +145,7 @@ struct Armed {
     previous: Option<HWND>,
     /// The tray window, which says when the GIF could not be saved.
     tray: HWND,
-    /// The recording, from the click on Record until Stop.
+    /// The recording, from the click on Record until its GIF is written.
     recorder: Option<Recorder>,
 }
 
@@ -300,9 +334,37 @@ fn brush(rgb: u32) -> HBRUSH {
     }
 }
 
-/// Whether a box is armed.
-pub fn is_armed() -> bool {
-    ARMED.with_borrow(|armed| armed.is_some())
+/// Where Record is now.
+pub fn state() -> State {
+    ARMED.with_borrow(|armed| match armed {
+        None => State::Idle,
+        Some(Armed { recorder: None, .. }) => State::Armed,
+        Some(_) => State::Recording,
+    })
+}
+
+/// Moves Record on, as the hotkey and the tray entry do once a box is up: an armed box starts
+/// recording, and a recording stops. Saving waits out its moment.
+pub fn advance() {
+    match state() {
+        State::Idle => {}
+        State::Armed => start_recording(),
+        State::Recording => stop_recording(),
+    }
+}
+
+/// Ends Record because Zilum is leaving: an armed box closes, and a recording stops and its GIF
+/// is saved and copied before this returns. No Notice says so, since Zilum is leaving with it.
+pub fn end() {
+    let Some(mut armed) = ARMED.take() else {
+        return;
+    };
+    // The pill goes first, so the outcome the recording posts to it reaches nothing.
+    let recorder = armed.recorder.take();
+    close(armed);
+    if let Some(recorder) = recorder {
+        recorder.finish();
+    }
 }
 
 /// Puts the box around `chosen` on `screen`, and the pill beside it, on the live desktop, and
@@ -311,7 +373,7 @@ pub fn is_armed() -> bool {
 /// a box is already armed, or if nothing of `chosen` is on `screen`. `tray` says when a GIF could
 /// not be saved.
 pub fn arm(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWND) {
-    if !is_armed()
+    if state() == State::Idle
         && let Ok(armed) = Armed::new(screen, chosen, previous, tray)
     {
         ARMED.set(armed);
@@ -322,7 +384,7 @@ pub fn arm(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWND)
 /// Starts recording the box, from now: the pill turns into its clock and Stop.
 fn start_recording() {
     with_armed(|armed| {
-        if !matches!(armed.pill.stage, Stage::Armed { .. }) {
+        if armed.recorder.is_some() {
             return;
         }
         let started = Instant::now();
@@ -341,11 +403,48 @@ fn start_recording() {
 /// Stops the recording: the pill reads Saving… until the GIF is written.
 fn stop_recording() {
     with_armed(|armed| {
-        if let Some(recorder) = armed.recorder.take() {
+        let saving = matches!(armed.pill.stage, Stage::Saving { .. });
+        if let Some(recorder) = &armed.recorder
+            && !saving
+        {
             recorder.stop();
             let _ = armed.pill.saving();
         }
     });
+}
+
+/// Stops the recording, or closes an armed box, once the displays have changed so that the box's
+/// screen is no longer where it was: unplugged, turned off or moved. The box is on the desktop
+/// where that screen was. A screen still there may have a new handle, which the box takes.
+fn displays_changed() {
+    let mut lost = false;
+    with_armed(|armed| match screen_at(armed.bounds) {
+        Some(screen) => armed.screen = screen,
+        None => lost = true,
+    });
+    if lost {
+        match state() {
+            State::Idle => {}
+            State::Armed => disarm(),
+            State::Recording => stop_recording(),
+        }
+    }
+}
+
+/// The screen with exactly `bounds` on the desktop, if there is one.
+fn screen_at(bounds: RECT) -> Option<HMONITOR> {
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+    unsafe {
+        let screen = MonitorFromRect(&bounds, MONITOR_DEFAULTTONULL);
+        (!screen.is_invalid()
+            && GetMonitorInfoW(screen, &mut info).as_bool()
+            && info.rcMonitor == bounds)
+            .then_some(screen)
+    }
 }
 
 /// Closes the box and its pill once a recording has ended as `outcome` says, and tells how it
@@ -378,20 +477,32 @@ fn with_armed(f: impl FnOnce(&mut Armed)) {
     });
 }
 
-/// Closes the box and its pill, leaving nothing on the screen. If a click gave the pill the
-/// front, it goes back to the window the user was in, as Esc on the overlay gives it.
+/// Closes the box and its pill, leaving nothing on the screen.
 fn disarm() {
     // Taken out first: destroying the pill sends it messages that look for it.
     if let Some(armed) = ARMED.take() {
-        // SAFETY: Takes nothing.
-        if unsafe { GetForegroundWindow() } == armed.pill.hwnd {
-            window::give_front(armed.previous);
-        }
-        win32::destroy(armed.pill.hwnd);
-        if let Some(line) = armed.line {
-            win32::destroy(line);
-        }
+        close(armed);
     }
+}
+
+/// Closes the box and pill of `armed`, already taken out of `ARMED`. If a click gave the pill
+/// the front, it goes back to the window the user was in, as Esc on the overlay gives it.
+fn close(armed: Armed) {
+    // SAFETY: Takes nothing.
+    if unsafe { GetForegroundWindow() } == armed.pill.hwnd {
+        window::give_front(armed.previous);
+    }
+    destroy_pill(armed.pill.hwnd);
+    if let Some(line) = armed.line {
+        win32::destroy(line);
+    }
+}
+
+/// Destroys the pill's window `hwnd`, which is no longer told about locks and switches.
+fn destroy_pill(hwnd: HWND) {
+    // SAFETY: Takes a live handle. One that was never registered is refused, harmlessly.
+    let _ = unsafe { WTSUnRegisterSessionNotification(hwnd) };
+    win32::destroy(hwnd);
 }
 
 impl Armed {
@@ -436,6 +547,7 @@ impl Armed {
         Ok(Some(Armed {
             screen,
             area,
+            bounds,
             line,
             pill,
             previous,
@@ -584,6 +696,9 @@ impl Pill {
                 None,
             )?;
             prepare(hwnd);
+            // A lock or a switch away stops the recording. Without this, a locked screen would be
+            // recorded as its last frame until the user is back.
+            let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
             let made = (|| {
                 let surface = graphics.composition.CreateSurface(
                     layout.width as u32,
@@ -600,7 +715,7 @@ impl Pill {
             let (surface, visual, target) = match made {
                 Ok(made) => made,
                 Err(error) => {
-                    win32::destroy(hwnd);
+                    destroy_pill(hwnd);
                     return Err(error);
                 }
             };
@@ -620,7 +735,7 @@ impl Pill {
                 pressed: None,
             };
             if let Err(error) = pill.present() {
-                win32::destroy(hwnd);
+                destroy_pill(hwnd);
                 return Err(error);
             }
             let _ = SetWindowPos(
@@ -918,6 +1033,24 @@ unsafe extern "system" fn pill_proc(
         WM_TIMER if wparam.0 == CLOCK_TIMER => with_pill(hwnd, |pill| {
             let _ = pill.tick();
         }),
+        // The user has left the screen: locked it, or switched away from the session. An armed
+        // box stays for when they are back.
+        WM_WTSSESSION_CHANGE
+            if matches!(
+                wparam.0 as u32,
+                WTS_SESSION_LOCK | WTS_CONSOLE_DISCONNECT | WTS_REMOTE_DISCONNECT
+            ) =>
+        {
+            stop_recording()
+        }
+        // Signing out or shutting down: stopped as it begins, so the GIF ends before the screen
+        // changes and is saved while Windows still waits. Never refused.
+        WM_QUERYENDSESSION => {
+            stop_recording();
+            return LRESULT(1);
+        }
+        // Every top-level window is told, the pill among them.
+        WM_DISPLAYCHANGE => displays_changed(),
         recording::WM_RECORDED => {
             // SAFETY: This is a WM_RECORDED message, and its outcome is taken only here.
             finish(unsafe { recording::outcome(lparam) });
@@ -984,6 +1117,13 @@ mod tests {
         right: 1920,
         bottom: 1040,
     };
+
+    #[test]
+    fn the_tray_entry_names_what_choosing_it_does_next() {
+        assert_eq!(State::Idle.entry(), "Record");
+        assert_eq!(State::Armed.entry(), "Start recording");
+        assert_eq!(State::Recording.entry(), "Stop recording");
+    }
 
     #[test]
     fn the_clock_reads_minutes_and_seconds_and_never_hours() {

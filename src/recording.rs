@@ -15,6 +15,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
     },
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -117,9 +118,12 @@ pub enum Outcome {
     Failed(String),
 }
 
-/// A recording running. Dropping it stops the recording, as [`Recorder::stop`] does.
+/// A recording, from its start until its GIF is written. Dropping it stops the recording, as
+/// [`Recorder::stop`] does.
 pub struct Recorder {
     stop: Sender<Instant>,
+    /// Records, then writes and copies the GIF, then posts how it went.
+    thread: JoinHandle<()>,
 }
 
 impl Recorder {
@@ -135,17 +139,25 @@ impl Recorder {
     ) -> io::Result<Recorder> {
         let (stop, stopped) = mpsc::channel();
         let (screen, to) = (screen.0 as isize, to.0 as isize);
-        std::thread::Builder::new().spawn(move || {
+        let thread = std::thread::Builder::new().spawn(move || {
             graphics::init_apartment();
             let outcome = record(HMONITOR(screen as _), area, started, taken, &stopped);
             post(HWND(to as _), outcome);
         })?;
-        Ok(Recorder { stop })
+        Ok(Recorder { stop, thread })
     }
 
-    /// Stops the recording now. The GIF is written soon after.
-    pub fn stop(self) {
+    /// Stops the recording now, if it has not stopped. The GIF is written soon after.
+    pub fn stop(&self) {
         let _ = self.stop.send(Instant::now());
+    }
+
+    /// Stops the recording now, if it has not stopped, and waits until its GIF is written and
+    /// copied, or could not be, for Zilum to leave. The window it was started for is gone by
+    /// then, so nothing is told how it went.
+    pub fn finish(self) {
+        self.stop();
+        let _ = self.thread.join();
     }
 }
 

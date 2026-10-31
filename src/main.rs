@@ -82,7 +82,7 @@ use windows::{
             },
         },
     },
-    core::{BOOL, PCWSTR, Result, w},
+    core::{BOOL, HSTRING, PCWSTR, Result, w},
 };
 
 use crate::{
@@ -113,9 +113,10 @@ const MENU_FADE_TIMER: usize = 100;
 const MENU_FADE_MS: u32 = 280;
 
 thread_local! {
-    /// A capture, Copy text or Record chosen from the tray menu, waiting out the menu's fade, and
-    /// the window the user was in.
-    static WAITING: Cell<Option<(Mode, Option<HWND>)>> = const { Cell::new(None) };
+    /// A capture, Copy text or Record chosen from the tray menu, waiting out the menu's fade, the
+    /// window the user was in, and where Record was when the menu showed.
+    static WAITING: Cell<Option<(Mode, Option<HWND>, record::State)>> =
+        const { Cell::new(None) };
 }
 
 /// What a selection on the overlay is for.
@@ -285,14 +286,14 @@ unsafe extern "system" fn window_proc(
             let previous = window::valid(unsafe { GetForegroundWindow() });
             if let Some(mode) = mode_of(wparam.0) {
                 cancel_waiting(hwnd);
-                start(hwnd, mode, previous);
+                start(hwnd, mode, previous, record::state());
             }
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == MENU_FADE_TIMER => {
             win32::kill_timer(hwnd, MENU_FADE_TIMER);
-            if let Some((chosen, previous)) = WAITING.take() {
-                start(hwnd, chosen, previous);
+            if let Some((chosen, previous, record)) = WAITING.take() {
+                start(hwnd, chosen, previous, record);
             }
             LRESULT(0)
         }
@@ -331,7 +332,9 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        // Quit, a newer copy taking over, signing out and shutting down all end here.
         WM_DESTROY => {
+            record::end();
             let nid = tray_data(hwnd);
             // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
@@ -457,10 +460,11 @@ fn snipping_tool_owns_printscreen() -> bool {
     status.is_ok() && value != 0
 }
 
-/// Captures, copies text or arms a box to record, as `mode` asks. `previous` is the window the
-/// user was in, which gets the keyboard back when no editor takes it, or when the editor leaves
-/// untouched.
-fn start(tray: HWND, mode: Mode, previous: Option<HWND>) {
+/// Captures, copies text or moves Record on, as `mode` asks. `previous` is the window the user was
+/// in, which gets the keyboard back when no editor takes it, or when the editor leaves untouched.
+/// `record` is where Record was when the user asked: Record opens the overlay from idle, starts
+/// an armed box recording and stops a recording, and does nothing if it has moved on since.
+fn start(tray: HWND, mode: Mode, previous: Option<HWND>, record: record::State) {
     match mode {
         Mode::Capture => open_overlay(tray, previous, Purpose::Capture),
         Mode::Screen => capture_screen(tray, previous),
@@ -470,20 +474,25 @@ fn start(tray: HWND, mode: Mode, previous: Option<HWND>) {
             previous,
         ),
         Mode::CopyText => open_overlay(tray, previous, Purpose::CopyText),
-        // While a box is armed, Record opens no second overlay and makes no second box.
-        Mode::Record if record::is_armed() => {}
-        Mode::Record => open_overlay(tray, previous, Purpose::Record),
+        // A click on the pill while the menu faded, say, has done it already.
+        Mode::Record if record::state() != record => {}
+        // While a box is armed or recording, Record opens no second overlay and makes no second
+        // box.
+        Mode::Record if record == record::State::Idle => {
+            open_overlay(tray, previous, Purpose::Record)
+        }
+        Mode::Record => record::advance(),
     }
 }
 
-/// Runs `chosen` from the tray menu once Windows has faded the chosen item out, so the capture
-/// does not hold it. The pointer is then still about where the item was clicked, so the capture
-/// is of that screen.
-fn after_fade(tray: HWND, chosen: Mode, previous: Option<HWND>) {
+/// Runs `chosen` from the tray menu, which showed Record as `record`, once Windows has faded the
+/// chosen item out, so the capture or the recording does not hold it. The pointer is then still
+/// about where the item was clicked, so the capture is of that screen.
+fn after_fade(tray: HWND, chosen: Mode, previous: Option<HWND>, record: record::State) {
     if menu_fades() && win32::set_timer(tray, MENU_FADE_TIMER, MENU_FADE_MS) {
-        WAITING.set(Some((chosen, previous)));
+        WAITING.set(Some((chosen, previous, record)));
     } else {
-        start(tray, chosen, previous);
+        start(tray, chosen, previous, record);
     }
 }
 
@@ -671,6 +680,8 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
     let previous = window::valid(previous);
     // Its timer would fire under this menu, and the capture would hold the menu.
     cancel_waiting(hwnd);
+    let record = record::state();
+    let record_entry = HSTRING::from(record.entry());
     // SAFETY: `menu_filter` is a HOOKPROC on this thread; the rest take handles and integers.
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
@@ -678,7 +689,7 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE_WINDOW, w!("Capture window"));
         let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE_SCREEN, w!("Capture screen"));
         let _ = AppendMenuW(menu, MF_STRING, ID_COPY_TEXT, w!("Copy text"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_RECORD, w!("Record"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_RECORD, &record_entry);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
         let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_SAVE_FOLDER, w!("Open save folder"));
         let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Settings"));
@@ -702,11 +713,15 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
         win32::post(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
         match chosen.0 as usize {
-            ID_CAPTURE => after_fade(hwnd, Mode::Capture, previous),
-            ID_CAPTURE_WINDOW => after_fade(hwnd, Mode::Window, previous),
-            ID_CAPTURE_SCREEN => after_fade(hwnd, Mode::Screen, previous),
-            ID_COPY_TEXT => after_fade(hwnd, Mode::CopyText, previous),
-            ID_RECORD => after_fade(hwnd, Mode::Record, previous),
+            ID_CAPTURE => after_fade(hwnd, Mode::Capture, previous, record),
+            ID_CAPTURE_WINDOW => after_fade(hwnd, Mode::Window, previous, record),
+            ID_CAPTURE_SCREEN => after_fade(hwnd, Mode::Screen, previous, record),
+            ID_COPY_TEXT => after_fade(hwnd, Mode::CopyText, previous, record),
+            // Stopped at once, so the GIF ends where the user chose to end it.
+            ID_RECORD if record == record::State::Recording => {
+                start(hwnd, Mode::Record, previous, record)
+            }
+            ID_RECORD => after_fade(hwnd, Mode::Record, previous, record),
             ID_OPEN_SAVE_FOLDER => save::open_folder(),
             ID_SETTINGS => settings_window::open(hwnd),
             ID_QUIT => {
