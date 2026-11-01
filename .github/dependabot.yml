@@ -9,6 +9,11 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+    # windows-numerics must match the windows crate's windows-core. Its 0.100 needs
+    # windows 0.100, which is not out yet; drop this once it is.
+    ignore:
+      - dependency-name: windows-numerics
+        versions: ['>= 0.100']
     groups:
       crates:
         patterns: ['*']
