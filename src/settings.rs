@@ -354,6 +354,7 @@ fn file_key(mode: Mode) -> &'static str {
         Mode::Capture => "hotkey_capture",
         Mode::Screen => "hotkey_screen",
         Mode::Window => "hotkey_window",
+        Mode::Scrolling => "hotkey_scrolling",
         Mode::CopyText => "hotkey_text",
         Mode::Record => "hotkey_record",
     }
@@ -408,7 +409,7 @@ fn colour_name(colour: Colour) -> &'static str {
 mod tests {
     use super::*;
 
-    fn hotkeys(texts: [&str; 5]) -> [Option<Hotkey>; 5] {
+    fn hotkeys(texts: [&str; 6]) -> [Option<Hotkey>; 6] {
         texts.map(|text| Hotkey::parse(text).unwrap())
     }
 
@@ -584,7 +585,7 @@ mod tests {
         let (settings, invalid) = parse("hotkey_screen=F12\n");
         assert_eq!(
             settings.hotkeys,
-            hotkeys(["PrintScreen", "F12", "None", "None", "None"])
+            hotkeys(["PrintScreen", "F12", "None", "None", "None", "None"])
         );
         assert!(!invalid);
         assert_eq!(parse(""), (defaults(), false));
@@ -634,6 +635,7 @@ mod tests {
                 "Shift+PrintScreen",
                 "None",
                 "None",
+                "None",
                 "Ctrl+PrintScreen"
             ])
         );
@@ -650,6 +652,7 @@ mod tests {
                 "PrintScreen",
                 "Shift+PrintScreen",
                 "None",
+                "None",
                 "Ctrl+Alt+T",
                 "None"
             ])
@@ -661,11 +664,64 @@ mod tests {
     }
 
     #[test]
+    fn the_capture_scrolling_hotkey_is_read_from_its_own_key() {
+        let (settings, invalid) = parse("hotkey_scrolling=Ctrl+PrintScreen\n");
+        assert_eq!(
+            settings.hotkeys,
+            hotkeys([
+                "PrintScreen",
+                "Shift+PrintScreen",
+                "None",
+                "Ctrl+PrintScreen",
+                "None",
+                "None"
+            ])
+        );
+        assert!(!invalid);
+        assert_eq!(parse("hotkey_scrolling=None\n"), (defaults(), false));
+        assert_eq!(parse("hotkey_scrolling=S\n"), (defaults(), true));
+    }
+
+    #[test]
+    fn a_file_from_before_capture_scrolling_reads_its_hotkey_as_none_silently() {
+        let (settings, invalid) = parse(
+            "hotkey_capture=PrintScreen\nhotkey_screen=Shift+PrintScreen\nhotkey_window=None\nhotkey_text=None\nhotkey_record=Ctrl+PrintScreen\ncolor=blue\n",
+        );
+        assert_eq!(settings.hotkeys[Mode::Scrolling as usize], None);
+        assert_eq!(
+            settings.hotkeys[Mode::Record as usize],
+            Hotkey::parse("Ctrl+PrintScreen").unwrap()
+        );
+        assert!(!invalid);
+    }
+
+    #[test]
+    fn capture_scrolling_keeps_a_hotkey_from_the_later_fields_and_loses_one_to_the_earlier() {
+        let (settings, invalid) =
+            parse("hotkey_scrolling=Ctrl+PrintScreen\nhotkey_record=ctrl+printscreen\n");
+        assert_eq!(
+            settings.hotkeys,
+            hotkeys([
+                "PrintScreen",
+                "Shift+PrintScreen",
+                "None",
+                "Ctrl+PrintScreen",
+                "None",
+                "None"
+            ])
+        );
+        assert!(invalid);
+        let (settings, invalid) = parse("hotkey_scrolling=Shift+PrintScreen\n");
+        assert_eq!(settings.hotkeys[Mode::Scrolling as usize], None);
+        assert!(invalid);
+    }
+
+    #[test]
     fn a_hotkey_repeating_an_earlier_modes_is_flagged_and_leaves_that_mode_with_none() {
         let (settings, invalid) = parse("hotkey_screen=PrintScreen\n");
         assert_eq!(
             settings.hotkeys,
-            hotkeys(["PrintScreen", "None", "None", "None", "None"])
+            hotkeys(["PrintScreen", "None", "None", "None", "None", "None"])
         );
         assert!(invalid);
     }
@@ -677,7 +733,7 @@ mod tests {
         );
         assert_eq!(
             to_text(&settings),
-            "hotkey_capture=Ctrl+Alt+Shift+R\r\nhotkey_screen=Shift+PrintScreen\r\nhotkey_window=None\r\nhotkey_text=None\r\nhotkey_record=None\r\nsave_folder=C:\\Users\\me\\Pictures\\Zilum\r\nstart_with_windows=true\r\ntheme=light\r\nwindow_background=trim\r\ncolor=blue\r\narrow_size=3\r\nrect_size=11\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=8\r\nrecord_hint_shown=false\r\n"
+            "hotkey_capture=Ctrl+Alt+Shift+R\r\nhotkey_screen=Shift+PrintScreen\r\nhotkey_window=None\r\nhotkey_scrolling=None\r\nhotkey_text=None\r\nhotkey_record=None\r\nsave_folder=C:\\Users\\me\\Pictures\\Zilum\r\nstart_with_windows=true\r\ntheme=light\r\nwindow_background=trim\r\ncolor=blue\r\narrow_size=3\r\nrect_size=11\r\npen_size=3\r\ncounter_size=32\r\ntext_size=20\r\nhead=one\r\nfill=outline\r\nblur=8\r\nrecord_hint_shown=false\r\n"
         );
     }
 
@@ -693,6 +749,7 @@ mod tests {
                             "Alt+F3",
                             "None",
                             "Ctrl+Shift+5",
+                            "Alt+Shift+S",
                             "F9",
                             "Ctrl+PrintScreen",
                         ]),

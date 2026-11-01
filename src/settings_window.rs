@@ -113,6 +113,7 @@ const LABELS: [&str; Mode::COUNT + 4] = [
     "Capture",
     "Screen",
     "Window",
+    "Scrolling",
     "Copy text",
     "Record",
     "Save folder",

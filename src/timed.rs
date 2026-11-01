@@ -63,7 +63,7 @@ mod tests {
     use super::*;
 
     /// The tray menu's entries other than the times.
-    const OTHER_ENTRIES: [usize; 8] = [
+    const OTHER_ENTRIES: [usize; 9] = [
         crate::ID_CAPTURE,
         crate::ID_OPEN_SAVE_FOLDER,
         crate::ID_QUIT,
@@ -72,6 +72,7 @@ mod tests {
         crate::ID_SETTINGS,
         crate::ID_COPY_TEXT,
         crate::ID_RECORD,
+        crate::ID_CAPTURE_SCROLLING,
     ];
 
     #[test]

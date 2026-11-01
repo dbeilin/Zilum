@@ -3,6 +3,7 @@
 mod annotation;
 mod background;
 mod bar;
+mod boxed;
 mod capture;
 mod caret;
 mod clipboard;
@@ -25,6 +26,7 @@ mod pixels;
 mod record;
 mod recording;
 mod save;
+mod scrolling;
 mod selection;
 mod settings;
 mod settings_layout;
@@ -111,6 +113,8 @@ const ID_CAPTURE_WINDOW: usize = 5;
 const ID_SETTINGS: usize = 6;
 const ID_COPY_TEXT: usize = 7;
 const ID_RECORD: usize = 8;
+/// Clear of the times under Capture screen in, 9 to 11.
+const ID_CAPTURE_SCROLLING: usize = 12;
 const HOTKEY_RETRY_MS: u32 = 500;
 const NIN_KEYSELECT: u32 = NIN_SELECT | 1;
 /// The timer that runs a capture, Copy text or Record chosen from the tray menu once the menu has
@@ -122,6 +126,34 @@ const MENU_FADE_TIMER: usize = 100;
 /// development machine a capture 250 ms after the menu closed sometimes held a trace of the item
 /// and one 260 ms after never did; 20 ms more is the margin.
 const MENU_FADE_MS: u32 = 280;
+
+/// An entry of the tray menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Entry {
+    /// An item, with its id and what it reads.
+    Item(usize, &'static str),
+    /// The submenu of times, and what it reads.
+    Times(&'static str),
+    /// Record, which reads what choosing it does next.
+    Record,
+    Separator,
+}
+
+/// The tray menu, in order.
+const MENU: [Entry; 12] = [
+    Entry::Item(ID_CAPTURE, "Capture"),
+    Entry::Item(ID_CAPTURE_WINDOW, "Capture window"),
+    Entry::Item(ID_CAPTURE_SCREEN, "Capture screen"),
+    Entry::Times("Capture screen in"),
+    Entry::Item(ID_CAPTURE_SCROLLING, "Capture scrolling"),
+    Entry::Item(ID_COPY_TEXT, "Copy text"),
+    Entry::Record,
+    Entry::Separator,
+    Entry::Item(ID_OPEN_SAVE_FOLDER, "Open save folder"),
+    Entry::Item(ID_SETTINGS, "Settings"),
+    Entry::Separator,
+    Entry::Item(ID_QUIT, "Quit"),
+];
 
 thread_local! {
     /// A capture, Copy text or Record chosen from the tray menu, waiting out the menu's fade, the
@@ -141,6 +173,8 @@ pub enum Purpose {
     CopyText,
     /// Record: a box around it on the live desktop, armed to record.
     Record,
+    /// Capture scrolling: a run over it, which delivers a capture.
+    Scrolling,
 }
 
 fn main() -> Result<()> {
@@ -314,6 +348,10 @@ unsafe extern "system" fn window_proc(
             // window in front either: the tray menu left the hidden tray window there, and it
             // stays until the user clicks into something.
             capture_screen(hwnd, window::valid(window::before_taskbar()));
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == scrolling::TIMER => {
+            scrolling::grab();
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == MENU_FADE_TIMER => {
@@ -509,6 +547,9 @@ fn start(tray: HWND, mode: Mode, previous: Option<HWND>, record: record::State) 
             editor::looking_past(previous).and_then(window::capturable),
             previous,
         ),
+        // While a run is up, Capture scrolling opens no second overlay and starts no second run.
+        Mode::Scrolling if scrolling::running() => {}
+        Mode::Scrolling => open_overlay(tray, previous, Purpose::Scrolling),
         Mode::CopyText => open_overlay(tray, previous, Purpose::CopyText),
         // A click on the pill while the menu faded, say, has done it already.
         Mode::Record if record::state() != record => {}
@@ -692,8 +733,9 @@ pub fn deliver(
                 window::give_front(previous);
                 copy_text::start(image, screen, tray);
             }
-            // The overlay arms a box for Record rather than delivering a capture.
-            Purpose::Record => {}
+            // The overlay arms a box for Record, or starts a run, rather than delivering a
+            // capture.
+            Purpose::Record | Purpose::Scrolling => {}
         },
         None => notify(tray, "Capture failed"),
     }
@@ -721,23 +763,28 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
     // SAFETY: `menu_filter` is a HOOKPROC on this thread; the rest take handles and integers.
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
-        let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE, w!("Capture"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE_WINDOW, w!("Capture window"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE_SCREEN, w!("Capture screen"));
-        // Destroyed with the menu.
-        if let Ok(times) = CreatePopupMenu() {
-            for time in timed::TIMES {
-                let _ = AppendMenuW(times, MF_STRING, time.menu_id, &HSTRING::from(time.text));
-            }
-            let _ = AppendMenuW(menu, MF_POPUP, times.0 as usize, w!("Capture screen in"));
+        for entry in MENU {
+            let _ = match entry {
+                Entry::Item(id, text) => AppendMenuW(menu, MF_STRING, id, &HSTRING::from(text)),
+                // Destroyed with the menu.
+                Entry::Times(text) => match CreatePopupMenu() {
+                    Ok(times) => {
+                        for time in timed::TIMES {
+                            let _ = AppendMenuW(
+                                times,
+                                MF_STRING,
+                                time.menu_id,
+                                &HSTRING::from(time.text),
+                            );
+                        }
+                        AppendMenuW(menu, MF_POPUP, times.0 as usize, &HSTRING::from(text))
+                    }
+                    Err(error) => Err(error),
+                },
+                Entry::Record => AppendMenuW(menu, MF_STRING, ID_RECORD, &record_entry),
+                Entry::Separator => AppendMenuW(menu, MF_SEPARATOR, 0, None),
+            };
         }
-        let _ = AppendMenuW(menu, MF_STRING, ID_COPY_TEXT, w!("Copy text"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_RECORD, &record_entry);
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-        let _ = AppendMenuW(menu, MF_STRING, ID_OPEN_SAVE_FOLDER, w!("Open save folder"));
-        let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, w!("Settings"));
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
-        let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, w!("Quit"));
         // Without this the menu does not close when the user clicks elsewhere.
         let _ = SetForegroundWindow(hwnd);
         let hook = SetWindowsHookExW(WH_MSGFILTER, Some(menu_filter), None, GetCurrentThreadId());
@@ -759,6 +806,7 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
             ID_CAPTURE => after_fade(hwnd, Mode::Capture, previous, record),
             ID_CAPTURE_WINDOW => after_fade(hwnd, Mode::Window, previous, record),
             ID_CAPTURE_SCREEN => after_fade(hwnd, Mode::Screen, previous, record),
+            ID_CAPTURE_SCROLLING => after_fade(hwnd, Mode::Scrolling, previous, record),
             ID_COPY_TEXT => after_fade(hwnd, Mode::CopyText, previous, record),
             // Stopped at once, so the GIF ends where the user chose to end it.
             ID_RECORD if record == record::State::Recording => {
@@ -894,4 +942,61 @@ fn show_notification(hwnd: HWND, text: &str) {
     copy_wide(text, &mut nid.szInfo);
     // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let _ = unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What each tray menu entry reads, a separator as `-`, with Record idle.
+    fn texts() -> Vec<&'static str> {
+        MENU.iter()
+            .map(|entry| match entry {
+                Entry::Item(_, text) | Entry::Times(text) => *text,
+                Entry::Record => record::State::Idle.entry(),
+                Entry::Separator => "-",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_tray_menu_reads_capture_scrolling_fifth_after_capture_screen_in() {
+        assert_eq!(
+            texts(),
+            [
+                "Capture",
+                "Capture window",
+                "Capture screen",
+                "Capture screen in",
+                "Capture scrolling",
+                "Copy text",
+                "Record",
+                "-",
+                "Open save folder",
+                "Settings",
+                "-",
+                "Quit",
+            ]
+        );
+    }
+
+    #[test]
+    fn each_tray_entry_has_a_menu_id_of_its_own() {
+        let mut ids: Vec<usize> = MENU
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Item(id, _) => Some(*id),
+                Entry::Record => Some(ID_RECORD),
+                Entry::Times(_) | Entry::Separator => None,
+            })
+            .chain(timed::TIMES.iter().map(|time| time.menu_id))
+            .collect();
+        let count = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), count);
+        // TrackPopupMenu returns 0 when nothing was chosen.
+        assert!(!ids.contains(&0));
+        assert!(MENU.contains(&Entry::Item(ID_CAPTURE_SCROLLING, "Capture scrolling")));
+    }
 }

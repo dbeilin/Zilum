@@ -53,9 +53,11 @@ use windows::{
 use windows_numerics::{Matrix3x2, Vector2};
 
 use crate::{
-    Purpose, capture, editor,
+    Purpose,
+    boxed::Chosen,
+    capture, editor,
     graphics::{self, Graphics},
-    record::{self, Chosen},
+    record, scrolling,
     selection::{self, Point, Selection, local},
     slide::{self, Area, Highlight, Slide},
     win32,
@@ -854,16 +856,21 @@ fn release(pointer: Point) -> Option<Release> {
     })
 }
 
-/// Puts the capture on the clipboard and in an editor, reads its text, or arms a box around it to
-/// record, as the release's purpose asks. The overlay is still open, and closes when the front
-/// goes from it back to the window the user was in.
+/// Puts the capture on the clipboard and in an editor, reads its text, arms a box around it to
+/// record, or starts a run over it, as the release's purpose asks. The overlay is still open, and
+/// closes when the front goes from it back to the window the user was in.
 fn capture(release: Release) {
-    if release.purpose == Purpose::Record {
+    let boxed = match release.purpose {
+        Purpose::Record => Some(record::arm as fn(_, _, _, _)),
+        Purpose::Scrolling => Some(scrolling::start as fn(_, _, _, _)),
+        Purpose::Capture | Purpose::CopyText => None,
+    };
+    if let Some(start) = boxed {
         let chosen = match release.taking {
             Taking::Region(selection) => Chosen::Region(selection),
             Taking::Window(_, window) => Chosen::Window(window),
         };
-        record::arm(release.shown_on, chosen, release.previous, release.tray);
+        start(release.shown_on, chosen, release.previous, release.tray);
         return;
     }
     match release.taking {

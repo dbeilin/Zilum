@@ -185,25 +185,27 @@ impl fmt::Display for Hotkey {
     }
 }
 
-/// What a hotkey starts: the three capture modes, Copy text and Record, in the order of their
-/// hotkeys' fields; an earlier field keeps a combination a later one repeats.
+/// What a hotkey starts: the three capture modes, Capture scrolling, Copy text and Record, in the
+/// order of their hotkeys' fields; an earlier field keeps a combination a later one repeats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Capture,
     Screen,
     Window,
+    Scrolling,
     CopyText,
     Record,
 }
 
 impl Mode {
     /// How many modes there are, and so hotkeys.
-    pub const COUNT: usize = 5;
+    pub const COUNT: usize = 6;
 
     pub const ALL: [Mode; Mode::COUNT] = [
         Mode::Capture,
         Mode::Screen,
         Mode::Window,
+        Mode::Scrolling,
         Mode::CopyText,
         Mode::Record,
     ];
@@ -217,6 +219,8 @@ impl Mode {
         }),
         // Clicking a window on the overlay captures it, so the window hotkey is for those who
         // want one.
+        None,
+        // The tray is the way in, as for Record.
         None,
         None,
         // Recordings are rare enough that the tray is the way in.
@@ -247,6 +251,7 @@ impl Mode {
             Mode::Capture => "Capture",
             Mode::Screen => "Screen capture",
             Mode::Window => "Window capture",
+            Mode::Scrolling => "Capture scrolling",
             Mode::CopyText => "Copy text",
             Mode::Record => "Record",
         }
@@ -302,7 +307,7 @@ impl Key {
 mod tests {
     use super::*;
 
-    fn hotkeys(texts: [&str; 5]) -> [Option<Hotkey>; 5] {
+    fn hotkeys(texts: [&str; 6]) -> [Option<Hotkey>; 6] {
         texts.map(|text| Hotkey::parse(text).unwrap())
     }
 
@@ -405,6 +410,7 @@ mod tests {
                 "PrintScreen",
                 "Ctrl+Shift+PrintScreen",
                 "None",
+                "None",
                 "None"
             ])),
             (
@@ -413,18 +419,25 @@ mod tests {
                     "None",
                     "Ctrl+Shift+PrintScreen",
                     "None",
+                    "None",
                     "None"
                 ]),
                 true
             )
         );
         assert_eq!(
-            without_repeats(hotkeys(["Alt+F3", "F12", "alt+f3", "F9", "None"])),
-            (hotkeys(["Alt+F3", "F12", "None", "F9", "None"]), true)
+            without_repeats(hotkeys(["Alt+F3", "F12", "alt+f3", "None", "F9", "None"])),
+            (
+                hotkeys(["Alt+F3", "F12", "None", "None", "F9", "None"]),
+                true
+            )
         );
         assert_eq!(
-            without_repeats(hotkeys(["F12", "F12", "F12", "F12", "None"])),
-            (hotkeys(["F12", "None", "None", "None", "None"]), true)
+            without_repeats(hotkeys(["F12", "F12", "F12", "None", "F12", "None"])),
+            (
+                hotkeys(["F12", "None", "None", "None", "None", "None"]),
+                true
+            )
         );
     }
 
@@ -434,11 +447,12 @@ mod tests {
             "PrintScreen",
             "Shift+PrintScreen",
             "Ctrl+Shift+PrintScreen",
+            "None",
             "Ctrl+Alt+T",
             "None",
         ]);
         assert_eq!(without_repeats(different), (different, false));
-        let nones = hotkeys(["None", "None", "Ctrl+R", "None", "None"]);
+        let nones = hotkeys(["None", "None", "Ctrl+R", "None", "None", "None"]);
         assert_eq!(without_repeats(nones), (nones, false));
     }
 
@@ -448,7 +462,7 @@ mod tests {
 
     #[test]
     fn a_bare_letter_or_digit_in_a_field_needs_a_modifier() {
-        let fields = [None; 5];
+        let fields = [None; 6];
         for key in [Key::Letter('R'), Key::Digit('5')] {
             assert_eq!(
                 refusal(fields, Mode::Capture, Some(Hotkey::bare(key))),
@@ -463,7 +477,14 @@ mod tests {
 
     #[test]
     fn a_combination_in_another_field_is_refused_naming_that_mode() {
-        let fields = hotkeys(["PrintScreen", "Shift+PrintScreen", "Alt+F3", "None", "None"]);
+        let fields = hotkeys([
+            "PrintScreen",
+            "Shift+PrintScreen",
+            "Alt+F3",
+            "None",
+            "None",
+            "None",
+        ]);
         assert_eq!(
             refusal(fields, Mode::Window, pressed("Shift+PrintScreen")),
             Some(Refusal::UsedFor(Mode::Screen))
@@ -481,7 +502,7 @@ mod tests {
     /// What `mode`'s field says under it when `text` is pressed in it while the fields hold
     /// `fields`, or `None` when it takes the combination. A bare letter or digit can be pressed
     /// though the file cannot hold it.
-    fn says(fields: [&str; 5], mode: Mode, text: &str) -> Option<String> {
+    fn says(fields: [&str; 6], mode: Mode, text: &str) -> Option<String> {
         let pressed = Hotkey::parse(text)
             .unwrap_or_else(|Invalid| Some(Hotkey::bare(Key::parse(text).unwrap())));
         refusal(hotkeys(fields), mode, pressed).map(|refusal| message(refusal, pressed))
@@ -489,7 +510,14 @@ mod tests {
 
     #[test]
     fn a_refused_combination_says_why_under_its_field() {
-        let fields = ["Ctrl+Alt+R", "Shift+PrintScreen", "None", "None", "None"];
+        let fields = [
+            "Ctrl+Alt+R",
+            "Shift+PrintScreen",
+            "None",
+            "None",
+            "None",
+            "None",
+        ];
         assert_eq!(
             says(fields, Mode::Capture, "R").as_deref(),
             Some("Add Ctrl, Alt or Shift")
@@ -508,7 +536,7 @@ mod tests {
         );
         assert_eq!(
             says(
-                ["F12", "Shift+PrintScreen", "Alt+F3", "None", "None"],
+                ["F12", "Shift+PrintScreen", "Alt+F3", "None", "None", "None"],
                 Mode::Capture,
                 "Alt+F3"
             )
@@ -527,6 +555,7 @@ mod tests {
             "PrintScreen",
             "Shift+PrintScreen",
             "F9",
+            "None",
             "Ctrl+Alt+T",
             "None",
         ];
@@ -561,6 +590,7 @@ mod tests {
             "PrintScreen",
             "Shift+PrintScreen",
             "None",
+            "None",
             "Ctrl+Alt+T",
             "Ctrl+PrintScreen",
         ];
@@ -586,21 +616,102 @@ mod tests {
     }
 
     #[test]
-    fn a_record_hotkey_repeating_any_of_the_other_four_is_left_with_none() {
-        for earlier in 0..4 {
-            let mut texts = ["None"; 5];
+    fn a_record_hotkey_repeating_any_of_the_other_five_is_left_with_none() {
+        for earlier in 0..5 {
+            let mut texts = ["None"; 6];
             texts[earlier] = "Alt+F3";
-            texts[4] = "alt+f3";
+            texts[5] = "alt+f3";
             let mut expected = texts;
-            expected[4] = "None";
+            expected[5] = "None";
             assert_eq!(
                 without_repeats(hotkeys(texts)),
                 (hotkeys(expected), true),
                 "{earlier}"
             );
         }
-        let all = hotkeys(["PrintScreen", "F9", "F10", "F11", "F12"]);
+        let all = hotkeys(["PrintScreen", "F9", "F10", "None", "F11", "F12"]);
         assert_eq!(without_repeats(all), (all, false));
+    }
+
+    #[test]
+    fn the_capture_scrolling_field_refuses_and_is_refused_like_the_others() {
+        let fields = [
+            "PrintScreen",
+            "Shift+PrintScreen",
+            "F9",
+            "Ctrl+PrintScreen",
+            "Ctrl+Alt+T",
+            "F12",
+        ];
+        for mode in [Mode::Capture, Mode::Window, Mode::CopyText, Mode::Record] {
+            assert_eq!(
+                says(fields, mode, "Ctrl+PrintScreen").as_deref(),
+                Some("Already used for Capture scrolling"),
+                "{mode:?}"
+            );
+        }
+        assert_eq!(
+            says(fields, Mode::Scrolling, "F9").as_deref(),
+            Some("Already used for Window capture")
+        );
+        assert_eq!(
+            says(fields, Mode::Scrolling, "F12").as_deref(),
+            Some("Already used for Record")
+        );
+        assert_eq!(
+            says(fields, Mode::Scrolling, "S").as_deref(),
+            Some("Add Ctrl, Alt or Shift")
+        );
+        assert_eq!(says(fields, Mode::Scrolling, "Ctrl+PrintScreen"), None);
+        assert_eq!(says(fields, Mode::Scrolling, "None"), None);
+    }
+
+    #[test]
+    fn a_capture_scrolling_hotkey_repeating_an_earlier_mode_is_left_with_none() {
+        for earlier in 0..3 {
+            let mut texts = ["None"; 6];
+            texts[earlier] = "Alt+F3";
+            texts[3] = "alt+f3";
+            let mut expected = texts;
+            expected[3] = "None";
+            assert_eq!(
+                without_repeats(hotkeys(texts)),
+                (hotkeys(expected), true),
+                "{earlier}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_later_hotkey_repeating_capture_scrollings_is_left_with_none() {
+        for later in 4..6 {
+            let mut texts = ["None"; 6];
+            texts[3] = "Ctrl+PrintScreen";
+            texts[later] = "Ctrl+PrintScreen";
+            let mut expected = texts;
+            expected[later] = "None";
+            assert_eq!(
+                without_repeats(hotkeys(texts)),
+                (hotkeys(expected), true),
+                "{later}"
+            );
+        }
+    }
+
+    #[test]
+    fn capture_scrolling_has_no_hotkey_by_default_and_its_field_follows_the_capture_modes() {
+        assert_eq!(Mode::DEFAULTS[Mode::Scrolling as usize], None);
+        assert_eq!(
+            Mode::ALL,
+            [
+                Mode::Capture,
+                Mode::Screen,
+                Mode::Window,
+                Mode::Scrolling,
+                Mode::CopyText,
+                Mode::Record
+            ]
+        );
     }
 
     #[test]
@@ -623,7 +734,7 @@ mod tests {
 
     #[test]
     fn a_fields_own_combination_and_none_are_never_repeats() {
-        let fields = hotkeys(["None", "Shift+PrintScreen", "None", "None", "None"]);
+        let fields = hotkeys(["None", "Shift+PrintScreen", "None", "None", "None", "None"]);
         assert_eq!(
             refusal(fields, Mode::Screen, pressed("Shift+PrintScreen")),
             None

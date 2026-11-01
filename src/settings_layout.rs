@@ -76,10 +76,11 @@ pub enum Stop {
 }
 
 /// Every stop, in the order Tab moves through them.
-pub const STOPS: [Stop; 11] = [
+pub const STOPS: [Stop; 12] = [
     Stop::Hotkey(Mode::Capture),
     Stop::Hotkey(Mode::Screen),
     Stop::Hotkey(Mode::Window),
+    Stop::Hotkey(Mode::Scrolling),
     Stop::Hotkey(Mode::CopyText),
     Stop::Hotkey(Mode::Record),
     Stop::Folder,
@@ -172,8 +173,8 @@ pub struct Layout {
     pub close: D2D_RECT_F,
     /// Hotkeys, Saving, Appearance and Startup.
     pub headings: [D2D_RECT_F; 4],
-    /// Each row's name: Capture, Screen, Window, Copy text, Record, Save folder, Theme, Window
-    /// background and Start with Windows.
+    /// Each row's name: Capture, Screen, Window, Scrolling, Copy text, Record, Save folder, Theme,
+    /// Window background and Start with Windows.
     pub labels: [D2D_RECT_F; Mode::COUNT + 4],
     /// One hotkey field per mode in `Mode::ALL`, and the clear control inside its right end.
     pub hotkeys: [D2D_RECT_F; Mode::COUNT],
@@ -384,8 +385,8 @@ mod tests {
 
     #[test]
     fn at_100_percent_the_title_row_heads_four_groups_in_one_column() {
-        let layout = Layout::new(1.0, [1; 6]);
-        assert_eq!((layout.width, layout.height), (520, 788));
+        let layout = Layout::new(1.0, [1; 7]);
+        assert_eq!((layout.width, layout.height), (520, 848));
         assert_eq!(edges(layout.title), [16.0, 0.0, 474.0, 40.0]);
         assert_eq!(edges(layout.close), [474.0, 0.0, 520.0, 40.0]);
         // 16 above each heading and 8 below it.
@@ -393,44 +394,44 @@ mod tests {
             all(&layout.headings),
             [
                 [16.0, 56.0, 504.0, 76.0],
-                [16.0, 400.0, 504.0, 420.0],
-                [16.0, 504.0, 504.0, 524.0],
-                [16.0, 684.0, 504.0, 704.0],
+                [16.0, 460.0, 504.0, 480.0],
+                [16.0, 564.0, 504.0, 584.0],
+                [16.0, 744.0, 504.0, 764.0],
             ]
         );
     }
 
     #[test]
     fn the_version_line_is_the_window_s_whole_width_under_the_last_row() {
-        let layout = Layout::new(1.0, [1; 6]);
+        let layout = Layout::new(1.0, [1; 7]);
         // 16 below the toggle's row, 12 above the bottom.
-        assert_eq!(edges(layout.version), [0.0, 760.0, 520.0, 776.0]);
-        let large = Layout::new(1.5, [1; 6]);
-        assert_eq!(edges(large.version), [0.0, 1140.0, 780.0, 1164.0]);
+        assert_eq!(edges(layout.version), [0.0, 820.0, 520.0, 836.0]);
+        let large = Layout::new(1.5, [1; 7]);
+        assert_eq!(edges(large.version), [0.0, 1230.0, 780.0, 1254.0]);
         // A longer message moves it down with everything else.
-        let moved = Layout::new(1.0, [1, 3, 1, 1, 1, 1]);
-        assert_eq!(edges(moved.version), [0.0, 792.0, 520.0, 808.0]);
+        let moved = Layout::new(1.0, [1, 3, 1, 1, 1, 1, 1]);
+        assert_eq!(edges(moved.version), [0.0, 852.0, 520.0, 868.0]);
     }
 
     #[test]
     fn only_the_version_s_text_and_a_little_room_each_side_is_the_link() {
-        let mut layout = Layout::new(1.0, [1; 6]);
+        let mut layout = Layout::new(1.0, [1; 7]);
         layout.fit_version(80.0, 1.0);
         // 220 to 300 is the text, centred in 520; 4 more each side.
-        assert_eq!(edges(layout.version), [216.0, 760.0, 304.0, 776.0]);
-        assert_eq!(layout.hit((216.0, 768.0)), Some(Target::Version));
-        assert_eq!(layout.hit((303.0, 775.0)), Some(Target::Version));
-        assert_eq!(layout.hit((215.0, 768.0)), None);
-        assert_eq!(layout.hit((304.0, 768.0)), None);
-        assert_eq!(layout.hit((260.0, 759.0)), None);
-        let mut large = Layout::new(1.5, [1; 6]);
+        assert_eq!(edges(layout.version), [216.0, 820.0, 304.0, 836.0]);
+        assert_eq!(layout.hit((216.0, 828.0)), Some(Target::Version));
+        assert_eq!(layout.hit((303.0, 835.0)), Some(Target::Version));
+        assert_eq!(layout.hit((215.0, 828.0)), None);
+        assert_eq!(layout.hit((304.0, 828.0)), None);
+        assert_eq!(layout.hit((260.0, 819.0)), None);
+        let mut large = Layout::new(1.5, [1; 7]);
         large.fit_version(120.0, 1.5);
-        assert_eq!(edges(large.version), [324.0, 1140.0, 456.0, 1164.0]);
+        assert_eq!(edges(large.version), [324.0, 1230.0, 456.0, 1254.0]);
     }
 
     #[test]
     fn each_row_is_a_label_beside_its_control_with_its_message_under_the_field() {
-        let layout = Layout::new(1.0, [1; 6]);
+        let layout = Layout::new(1.0, [1; 7]);
         assert_eq!(
             all(&layout.labels),
             [
@@ -439,10 +440,11 @@ mod tests {
                 [16.0, 204.0, 144.0, 236.0],
                 [16.0, 264.0, 144.0, 296.0],
                 [16.0, 324.0, 144.0, 356.0],
-                [16.0, 428.0, 144.0, 460.0],
-                [16.0, 532.0, 144.0, 564.0],
-                [16.0, 572.0, 144.0, 636.0],
-                [16.0, 712.0, 144.0, 744.0],
+                [16.0, 384.0, 144.0, 416.0],
+                [16.0, 488.0, 144.0, 520.0],
+                [16.0, 592.0, 144.0, 624.0],
+                [16.0, 632.0, 144.0, 696.0],
+                [16.0, 772.0, 144.0, 804.0],
             ]
         );
         assert_eq!(
@@ -453,11 +455,12 @@ mod tests {
                 [144.0, 204.0, 384.0, 236.0],
                 [144.0, 264.0, 384.0, 296.0],
                 [144.0, 324.0, 384.0, 356.0],
+                [144.0, 384.0, 384.0, 416.0],
             ]
         );
         // The folder field and Browse share the row, 8 apart.
-        assert_eq!(edges(layout.folder), [144.0, 428.0, 412.0, 460.0]);
-        assert_eq!(edges(layout.browse), [420.0, 428.0, 504.0, 460.0]);
+        assert_eq!(edges(layout.folder), [144.0, 488.0, 412.0, 520.0]);
+        assert_eq!(edges(layout.browse), [420.0, 488.0, 504.0, 520.0]);
         // 4 below each field, one 16-pixel line, to the right margin.
         assert_eq!(
             all(&layout.messages),
@@ -467,113 +470,115 @@ mod tests {
                 [144.0, 240.0, 504.0, 256.0],
                 [144.0, 300.0, 504.0, 316.0],
                 [144.0, 360.0, 504.0, 376.0],
-                [144.0, 464.0, 504.0, 480.0],
+                [144.0, 420.0, 504.0, 436.0],
+                [144.0, 524.0, 504.0, 540.0],
             ]
         );
         assert_eq!(
             all(&layout.themes),
             [
-                [144.0, 532.0, 224.0, 564.0],
-                [224.0, 532.0, 304.0, 564.0],
-                [304.0, 532.0, 384.0, 564.0],
+                [144.0, 592.0, 224.0, 624.0],
+                [224.0, 592.0, 304.0, 624.0],
+                [304.0, 592.0, 384.0, 624.0],
             ]
         );
         // A 40 by 20 switch in the middle of its row, its state 12 after it.
-        assert_eq!(edges(layout.toggle), [144.0, 718.0, 184.0, 738.0]);
-        assert_eq!(edges(layout.toggle_state), [196.0, 712.0, 504.0, 744.0]);
+        assert_eq!(edges(layout.toggle), [144.0, 778.0, 184.0, 798.0]);
+        assert_eq!(edges(layout.toggle_state), [196.0, 772.0, 504.0, 804.0]);
     }
 
     #[test]
     fn the_window_background_is_a_row_of_tiles_under_the_theme_each_named_beneath() {
-        let layout = Layout::new(1.0, [1; 6]);
+        let layout = Layout::new(1.0, [1; 7]);
         // 96 by 64, 12 apart, 8 below the theme's row; the label beside the pictures.
         assert_eq!(
             all(&layout.tiles),
             [
-                [144.0, 572.0, 240.0, 636.0],
-                [252.0, 572.0, 348.0, 636.0],
-                [360.0, 572.0, 456.0, 636.0]
+                [144.0, 632.0, 240.0, 696.0],
+                [252.0, 632.0, 348.0, 696.0],
+                [360.0, 632.0, 456.0, 696.0]
             ]
         );
         assert_eq!(
             all(&layout.tile_names),
             [
-                [144.0, 640.0, 240.0, 660.0],
-                [252.0, 640.0, 348.0, 660.0],
-                [360.0, 640.0, 456.0, 660.0]
+                [144.0, 700.0, 240.0, 720.0],
+                [252.0, 700.0, 348.0, 720.0],
+                [360.0, 700.0, 456.0, 720.0]
             ]
         );
         // Inside the margin.
         assert!(layout.tiles[2].right <= 504.0);
-        let large = Layout::new(1.5, [1; 6]);
-        assert_eq!(edges(large.tiles[2]), [540.0, 858.0, 684.0, 954.0]);
+        let large = Layout::new(1.5, [1; 7]);
+        assert_eq!(edges(large.tiles[2]), [540.0, 948.0, 684.0, 1044.0]);
     }
 
     #[test]
     fn at_150_percent_every_length_is_half_as_long_again() {
-        let layout = Layout::new(1.5, [1; 6]);
-        assert_eq!((layout.width, layout.height), (780, 1182));
+        let layout = Layout::new(1.5, [1; 7]);
+        assert_eq!((layout.width, layout.height), (780, 1272));
         assert_eq!(edges(layout.close), [711.0, 0.0, 780.0, 60.0]);
-        assert_eq!(edges(layout.folder), [216.0, 642.0, 618.0, 690.0]);
-        assert_eq!(edges(layout.browse), [630.0, 642.0, 756.0, 690.0]);
-        assert_eq!(edges(layout.toggle), [216.0, 1077.0, 276.0, 1107.0]);
+        assert_eq!(edges(layout.folder), [216.0, 732.0, 618.0, 780.0]);
+        assert_eq!(edges(layout.browse), [630.0, 732.0, 756.0, 780.0]);
+        assert_eq!(edges(layout.toggle), [216.0, 1167.0, 276.0, 1197.0]);
     }
 
     #[test]
     fn a_longer_message_moves_everything_below_it_down_and_the_window_grows() {
         // The Screen field's message takes three lines, 32 more than one.
-        let layout = Layout::new(1.0, [1, 3, 1, 1, 1, 1]);
-        assert_eq!(layout.height, 788 + 32);
+        let layout = Layout::new(1.0, [1, 3, 1, 1, 1, 1, 1]);
+        assert_eq!(layout.height, 848 + 32);
         assert_eq!(edges(layout.hotkeys[1]), [144.0, 144.0, 384.0, 176.0]);
         assert_eq!(edges(layout.messages[1]), [144.0, 180.0, 504.0, 228.0]);
         assert_eq!(edges(layout.hotkeys[2]), [144.0, 236.0, 384.0, 268.0]);
         assert_eq!(edges(layout.hotkeys[3]), [144.0, 296.0, 384.0, 328.0]);
         assert_eq!(edges(layout.hotkeys[4]), [144.0, 356.0, 384.0, 388.0]);
-        assert_eq!(edges(layout.folder), [144.0, 460.0, 412.0, 492.0]);
+        assert_eq!(edges(layout.hotkeys[5]), [144.0, 416.0, 384.0, 448.0]);
+        assert_eq!(edges(layout.folder), [144.0, 520.0, 412.0, 552.0]);
         // An empty message keeps its line.
-        assert_eq!(Layout::new(1.0, [0; 6]), Layout::new(1.0, [1; 6]));
+        assert_eq!(Layout::new(1.0, [0; 7]), Layout::new(1.0, [1; 7]));
     }
 
     #[test]
     fn a_press_lands_on_close_browse_a_theme_a_tile_or_the_switch() {
-        let layout = Layout::new(1.0, [1; 6]);
+        let layout = Layout::new(1.0, [1; 7]);
         assert_eq!(layout.hit((500.0, 20.0)), Some(Target::Close));
-        assert_eq!(layout.hit((420.0, 428.0)), Some(Target::Browse));
+        assert_eq!(layout.hit((420.0, 488.0)), Some(Target::Browse));
         assert_eq!(
-            layout.hit((150.0, 540.0)),
+            layout.hit((150.0, 600.0)),
             Some(Target::Theme(Theme::System))
         );
         assert_eq!(
-            layout.hit((224.0, 540.0)),
+            layout.hit((224.0, 600.0)),
             Some(Target::Theme(Theme::Light))
         );
-        assert_eq!(layout.hit((383.0, 563.0)), Some(Target::Theme(Theme::Dark)));
+        assert_eq!(layout.hit((383.0, 623.0)), Some(Target::Theme(Theme::Dark)));
         // A tile's picture or its name.
         assert_eq!(
-            layout.hit((144.0, 572.0)),
+            layout.hit((144.0, 632.0)),
             Some(Target::Background(Background::TrimShadow))
         );
         assert_eq!(
-            layout.hit((347.0, 659.0)),
+            layout.hit((347.0, 719.0)),
             Some(Target::Background(Background::Shadow))
         );
         assert_eq!(
-            layout.hit((400.0, 600.0)),
+            layout.hit((400.0, 660.0)),
             Some(Target::Background(Background::Wallpaper))
         );
-        assert_eq!(layout.hit((160.0, 728.0)), Some(Target::StartWithWindows));
+        assert_eq!(layout.hit((160.0, 788.0)), Some(Target::StartWithWindows));
         // The title, a label, a field and the space between rows.
         assert_eq!(layout.hit((100.0, 20.0)), None);
         assert_eq!(layout.hit((50.0, 100.0)), None);
-        assert_eq!(layout.hit((200.0, 440.0)), None);
-        assert_eq!(layout.hit((384.0, 540.0)), None);
-        assert_eq!(layout.hit((245.0, 600.0)), None);
-        assert_eq!(layout.hit((300.0, 664.0)), None);
+        assert_eq!(layout.hit((200.0, 500.0)), None);
+        assert_eq!(layout.hit((384.0, 600.0)), None);
+        assert_eq!(layout.hit((245.0, 660.0)), None);
+        assert_eq!(layout.hit((300.0, 724.0)), None);
     }
 
     #[test]
     fn each_hotkey_field_ends_in_its_clear_control_and_a_press_lands_on_either() {
-        let layout = Layout::new(1.0, [1; 6]);
+        let layout = Layout::new(1.0, [1; 7]);
         // A field's height square at its right end.
         assert_eq!(
             all(&layout.clears),
@@ -583,6 +588,7 @@ mod tests {
                 [352.0, 204.0, 384.0, 236.0],
                 [352.0, 264.0, 384.0, 296.0],
                 [352.0, 324.0, 384.0, 356.0],
+                [352.0, 384.0, 384.0, 416.0],
             ]
         );
         assert_eq!(
@@ -603,25 +609,33 @@ mod tests {
         );
         assert_eq!(
             layout.hit((144.0, 264.0)),
-            Some(Target::Hotkey(Mode::CopyText))
+            Some(Target::Hotkey(Mode::Scrolling))
         );
         assert_eq!(
             layout.hit((383.0, 295.0)),
-            Some(Target::Clear(Mode::CopyText))
+            Some(Target::Clear(Mode::Scrolling))
         );
         assert_eq!(
             layout.hit((144.0, 324.0)),
-            Some(Target::Hotkey(Mode::Record))
+            Some(Target::Hotkey(Mode::CopyText))
         );
         assert_eq!(
             layout.hit((383.0, 355.0)),
+            Some(Target::Clear(Mode::CopyText))
+        );
+        assert_eq!(
+            layout.hit((144.0, 384.0)),
+            Some(Target::Hotkey(Mode::Record))
+        );
+        assert_eq!(
+            layout.hit((383.0, 415.0)),
             Some(Target::Clear(Mode::Record))
         );
         // Beside a field, under it and between two.
         assert_eq!(layout.hit((384.0, 100.0)), None);
         assert_eq!(layout.hit((200.0, 120.0)), None);
         assert_eq!(layout.hit((200.0, 140.0)), None);
-        let large = Layout::new(1.5, [1; 6]);
+        let large = Layout::new(1.5, [1; 7]);
         assert_eq!(edges(large.clears[0]), [528.0, 126.0, 576.0, 174.0]);
     }
 
@@ -630,7 +644,7 @@ mod tests {
      {
         let mut at = next(None, false);
         let mut visited = vec![at];
-        for _ in 0..11 {
+        for _ in 0..12 {
             at = next(Some(at), false);
             visited.push(at);
         }
@@ -640,6 +654,7 @@ mod tests {
                 Stop::Hotkey(Mode::Capture),
                 Stop::Hotkey(Mode::Screen),
                 Stop::Hotkey(Mode::Window),
+                Stop::Hotkey(Mode::Scrolling),
                 Stop::Hotkey(Mode::CopyText),
                 Stop::Hotkey(Mode::Record),
                 Stop::Folder,
