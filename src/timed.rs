@@ -1,6 +1,10 @@
 //! Capture screen in: a screen capture taken a chosen time after the click, from the tray menu's
 //! submenu of three times.
 
+use windows::Win32::UI::WindowsAndMessaging::{
+    WTS_CONSOLE_DISCONNECT, WTS_REMOTE_DISCONNECT, WTS_SESSION_LOCK, WTS_SESSION_LOGOFF,
+};
+
 /// A time under Capture screen in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Time {
@@ -44,9 +48,31 @@ pub fn ms_for(menu_id: usize) -> Option<u32> {
         .map(|time| time.ms)
 }
 
+/// Whether the session change `code`, a `WM_WTSSESSION_CHANGE` wparam, drops a timed capture
+/// waiting: the user has left the screen they set up, by locking it, signing out or switching
+/// away from the session, and a capture of what replaces it is never what was wanted.
+pub fn dropped_by(code: u32) -> bool {
+    matches!(
+        code,
+        WTS_SESSION_LOCK | WTS_SESSION_LOGOFF | WTS_CONSOLE_DISCONNECT | WTS_REMOTE_DISCONNECT
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tray menu's entries other than the times.
+    const OTHER_ENTRIES: [usize; 8] = [
+        crate::ID_CAPTURE,
+        crate::ID_OPEN_SAVE_FOLDER,
+        crate::ID_QUIT,
+        crate::ID_CAPTURE_SCREEN,
+        crate::ID_CAPTURE_WINDOW,
+        crate::ID_SETTINGS,
+        crate::ID_COPY_TEXT,
+        crate::ID_RECORD,
+    ];
 
     #[test]
     fn the_submenu_reads_3_5_and_10_seconds() {
@@ -61,16 +87,7 @@ mod tests {
     #[test]
     fn each_time_has_a_menu_id_of_its_own_among_the_tray_entries() {
         let mut ids: Vec<_> = TIMES.iter().map(|time| time.menu_id).collect();
-        ids.extend([
-            crate::ID_CAPTURE,
-            crate::ID_OPEN_SAVE_FOLDER,
-            crate::ID_QUIT,
-            crate::ID_CAPTURE_SCREEN,
-            crate::ID_CAPTURE_WINDOW,
-            crate::ID_SETTINGS,
-            crate::ID_COPY_TEXT,
-            crate::ID_RECORD,
-        ]);
+        ids.extend(OTHER_ENTRIES);
         let count = ids.len();
         ids.sort();
         ids.dedup();
@@ -84,7 +101,29 @@ mod tests {
         assert_eq!(ms_for(9), Some(3000));
         assert_eq!(ms_for(10), Some(5000));
         assert_eq!(ms_for(11), Some(10000));
-        assert_eq!(ms_for(crate::ID_CAPTURE_SCREEN), None);
+    }
+
+    #[test]
+    fn the_tray_menus_other_entries_leave_a_waiting_capture() {
+        for id in OTHER_ENTRIES {
+            assert_eq!(ms_for(id), None, "menu id {id}");
+        }
+    }
+
+    #[test]
+    fn locking_signing_out_and_switching_away_drop_a_waiting_capture() {
+        // From WtsApi32.h: console and remote disconnect 2 and 4, logoff 6, lock 7.
+        for code in [2, 4, 6, 7] {
+            assert!(dropped_by(code), "session change {code}");
+        }
+    }
+
+    #[test]
+    fn coming_back_to_the_session_leaves_a_waiting_capture() {
+        // Console and remote connect 1 and 3, logon 5, unlock 8, remote control 9.
+        for code in [1, 3, 5, 8, 9] {
+            assert!(!dropped_by(code), "session change {code}");
+        }
     }
 
     #[test]

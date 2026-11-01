@@ -60,6 +60,10 @@ use windows::{
         System::{
             LibraryLoader::GetModuleHandleW,
             Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
+            RemoteDesktop::{
+                NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification,
+                WTSUnRegisterSessionNotification,
+            },
             SystemInformation::GetLocalTime,
             Threading::{CreateMutexW, GetCurrentThreadId},
         },
@@ -84,7 +88,8 @@ use windows::{
                 SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
                 TranslateMessage, UnhookWindowsHookEx, WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP,
                 WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_NULL,
-                WM_QUERYENDSESSION, WM_QUIT, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
+                WM_QUERYENDSESSION, WM_QUIT, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSW,
+                WS_OVERLAPPED,
             },
         },
     },
@@ -346,6 +351,13 @@ unsafe extern "system" fn window_proc(
             win32::destroy(hwnd);
             LRESULT(0)
         }
+        // The user has left the screen they set up for a timed capture.
+        WM_WTSSESSION_CHANGE if timed::dropped_by(wparam.0 as u32) => {
+            win32::kill_timer(hwnd, timed::TIMER);
+            LRESULT(0)
+        }
+        // Not dropped here: another app may still refuse, and the session carry on. Signing out
+        // drops it on WTS_SESSION_LOGOFF, and shutting down with the window.
         WM_QUERYENDSESSION => LRESULT(1),
         WM_ENDSESSION => {
             if wparam.0 != 0 {
@@ -353,9 +365,12 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
-        // Quit, a newer copy taking over, signing out and shutting down all end here.
+        // Quit, a newer copy taking over, signing out and shutting down all end here. A timed
+        // capture waiting goes with the window's timers.
         WM_DESTROY => {
             record::end();
+            // SAFETY: Takes a live handle. One that was never registered is refused, harmlessly.
+            let _ = unsafe { WTSUnRegisterSessionNotification(hwnd) };
             let nid = tray_data(hwnd);
             // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
             let _ = unsafe { Shell_NotifyIconW(NIM_DELETE, &nid) };
@@ -758,10 +773,16 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
             // Counted from the click, so the fade passes inside the time. Setting the timer
             // again restarts it, so a second choice replaces the one waiting.
             id => {
-                if let Some(ms) = timed::ms_for(id)
-                    && !win32::set_timer(hwnd, timed::TIMER, ms)
-                {
-                    notify(hwnd, "Capture failed");
+                if let Some(ms) = timed::ms_for(id) {
+                    if win32::set_timer(hwnd, timed::TIMER, ms) {
+                        // So a lock or a switch away drops it. Registered at each choice, not at
+                        // start, since a start at sign-in can come before Windows' session
+                        // service is ready to take it; released first, so it is registered once.
+                        let _ = WTSUnRegisterSessionNotification(hwnd);
+                        let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+                    } else {
+                        notify(hwnd, "Capture failed");
+                    }
                 }
             }
         }
