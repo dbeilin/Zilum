@@ -78,6 +78,11 @@ const UNMOVED: Duration = Duration::from_millis(250);
 const CEILING: Duration = Duration::from_millis(500);
 /// How long the first frame may take before the capture counts as failed.
 const FIRST_FRAME: Duration = Duration::from_secs(2);
+/// The first frame is the picture as it is this long after the run begins. The window the user
+/// was in has just had the front back, and Windows fades its title bar to the active colour over
+/// about a fifth of a second; a first frame taken mid-fade differs from every later one there, and
+/// the title bar and everything under it lose their band.
+const FADE: Duration = Duration::from_millis(300);
 
 thread_local! {
     /// The run while one is up. There is never a second.
@@ -419,10 +424,9 @@ struct Joined {
     /// The area's width, and the scale of the screen it is on, which the capture has.
     width: u32,
     scale: f32,
-    /// The rows joined above the start frame, nearest it first.
-    above: Vec<Vec<u8>>,
-    /// The start frame and the rows joined below it.
-    below: Vec<u8>,
+    /// The rows kept of each frame that joined, the start frame first: the first row's place in
+    /// the frame, and the rows' pixels. The capture is made of them once the bands are known.
+    kept: Vec<(usize, Vec<u8>)>,
     /// The tray window, told the height as it grows.
     tray: HWND,
 }
@@ -435,8 +439,7 @@ impl Joined {
             stitch: Stitch::new(Frame::from_pixels(&first.pixels, first.width as usize)),
             width: first.width,
             scale: first.scale,
-            below: first.pixels,
-            above: Vec::new(),
+            kept: vec![(0, first.pixels)],
             tray,
         }
     }
@@ -457,22 +460,19 @@ impl Joined {
         Frame::from_pixels(pixels, self.width as usize)
     }
 
-    /// Keeps the rows of `pixels` that `verdict` says are new, and tells the tray window the
-    /// height if it grew.
+    /// Keeps the rows of `pixels` that `verdict` says the capture may take, and tells the tray
+    /// window the height if it grew.
     fn take(&mut self, verdict: Verdict, pixels: &[u8]) -> Next {
         let row = self.width as usize * 4;
         let rows = match &verdict {
-            Verdict::Joined(rows) | Verdict::Full(rows) => {
-                &pixels[rows.start * row..rows.end * row]
-            }
+            Verdict::Joined(rows) | Verdict::Full(rows) => rows,
             Verdict::Unmoved => return Next::Unmoved,
             Verdict::Lost => return Next::End,
         };
-        if self.stitch.up() {
-            self.above.push(rows.to_vec());
-        } else {
-            self.below.extend_from_slice(rows);
-        }
+        self.kept.push((
+            rows.start,
+            pixels[rows.start * row..rows.end * row].to_vec(),
+        ));
         win32::post(self.tray, WM_GROWN, WPARAM(self.stitch.height()), LPARAM(0));
         match verdict {
             Verdict::Full(_) => Next::End,
@@ -485,14 +485,17 @@ impl Joined {
         self.stitch.turn();
     }
 
-    /// The capture, taken at `taken`.
+    /// The capture, taken at `taken`: each band once, and the rows between them joined.
     fn capture(self, taken: SYSTEMTIME) -> Image {
         let height = self.stitch.height();
-        let mut pixels = Vec::with_capacity(height * self.width as usize * 4);
-        for rows in self.above.iter().rev() {
-            pixels.extend_from_slice(rows);
+        let row = self.width as usize * 4;
+        let mut pixels = Vec::with_capacity(height * row);
+        for piece in self.stitch.pieces() {
+            let (from, kept) = &self.kept[piece.frame];
+            pixels.extend_from_slice(
+                &kept[(piece.rows.start - from) * row..(piece.rows.end - from) * row],
+            );
         }
-        pixels.extend_from_slice(&self.below);
         Image::new(self.width, height as u32, pixels, taken, self.scale)
     }
 }
@@ -535,15 +538,21 @@ impl Frames {
         })
     }
 
-    /// The first frame, once it comes.
+    /// The first frame, once the title bar's fade is over and a frame has come.
     fn first(&mut self) -> Option<Image> {
-        let deadline = Instant::now() + FIRST_FRAME;
+        let begun = Instant::now();
+        let mut latest = None;
         loop {
             if let Some(image) = self.sample()? {
+                latest = Some(image);
+            }
+            if begun.elapsed() >= FADE
+                && let Some(image) = latest.take()
+            {
                 self.last = image.pixels.clone();
                 return Some(image);
             }
-            if Instant::now() >= deadline {
+            if begun.elapsed() >= FIRST_FRAME {
                 return None;
             }
             tick();
@@ -775,6 +784,48 @@ mod tests {
             Verdict::Full(_)
         ) {}
         assert_eq!(height_text(stitch.height()), "16,384 px");
+    }
+
+    #[test]
+    fn the_pill_counts_each_band_once() {
+        // A 20-row area of a header of 3 rows, 15 of a page and a footer of 2, moved 10 rows a
+        // step down from row 40 of the page to its end at row 99, and then up to its top.
+        let frame = |from: u64| {
+            Frame::of(
+                &[1000, 1001, 1002]
+                    .into_iter()
+                    .chain(from..from + 15)
+                    .chain([2000, 2001])
+                    .collect::<Vec<u64>>(),
+            )
+        };
+        let mut stitch = Stitch::new(frame(40));
+        let mut read = vec![height_text(stitch.height())];
+        for from in [50, 60, 70, 80, 85] {
+            stitch.add(frame(from));
+            read.push(height_text(stitch.height()));
+        }
+        stitch.turn();
+        for from in [30, 20, 10, 0] {
+            stitch.add(frame(from));
+            read.push(height_text(stitch.height()));
+        }
+        assert_eq!(
+            read,
+            [
+                "20 px", "30 px", "40 px", "50 px", "60 px", "65 px", "75 px", "85 px", "95 px",
+                "105 px"
+            ]
+        );
+        // The header, the page's 100 rows and the footer.
+        assert_eq!(
+            stitch
+                .pieces()
+                .iter()
+                .map(|piece| piece.rows.len())
+                .sum::<usize>(),
+            105
+        );
     }
 
     #[test]

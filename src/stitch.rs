@@ -97,35 +97,82 @@ impl Frame {
         self.rows.len()
     }
 
-    /// Row `at`, counted from the top, or from the bottom when `up`.
-    fn row(&self, at: usize, up: bool) -> &[Block] {
-        &self.rows[if up { self.height() - 1 - at } else { at }]
+    /// Whether row `y` is the same as `other`'s, as a band's rows are in every frame. The last
+    /// block across is left out: it holds the scrollbar, whose thumb moves beside a header that
+    /// does not.
+    fn same(&self, other: &Frame, y: usize) -> bool {
+        let (row, theirs) = (&self.rows[y], &other.rows[y]);
+        let compared = if row.len() > 1 { row.len() - 1 } else { 1 };
+        row.iter()
+            .zip(theirs)
+            .take(compared)
+            .all(|(block, their)| block.signature == their.signature)
     }
+
+    /// Its rows between `bands`.
+    fn between(&self, bands: Bands) -> &[Vec<Block>] {
+        &self.rows[bands.top..self.height() - bands.bottom]
+    }
+}
+
+/// The rows at the top and at the bottom of the area that are the same in every frame joined: a
+/// sticky header, a tab strip, an address bar, a footer, a status strip. Each is in the capture
+/// once, and the frames join on the rows between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Bands {
+    top: usize,
+    bottom: usize,
+}
+
+impl Bands {
+    /// No bands, as before any frame has joined the start frame.
+    const NONE: Bands = Bands { top: 0, bottom: 0 };
 }
 
 /// What a frame added to the stitch came to.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// The frame joined, and these of its rows, counted from its top, are new: below the stitch
-    /// going down, above it going up.
+    /// The frame joined, and these of its rows, counted from its top, are the ones the capture
+    /// may take from it: its new rows, below the stitch going down, above it going up, and the
+    /// band on that side.
     Joined(Range<usize>),
     /// The content did not move: this direction has reached its end.
     Unmoved,
     /// The frame joins nowhere: the stitch ends with what joined.
     Lost,
-    /// The frame joined and the stitch reached its limit with these of its new rows, the ones
-    /// nearest the join: it ends.
+    /// The frame joined, as with `Joined`, and the stitch reached its limit with some of its new
+    /// rows, the ones nearest the join: it ends.
     Full(Range<usize>),
+}
+
+/// Rows of one of the frames that joined, in the capture: the start frame is frame 0, and each
+/// frame joined after it the next.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Piece {
+    pub frame: usize,
+    pub rows: Range<usize>,
+}
+
+/// A frame that joined after the start frame.
+struct Join {
+    up: bool,
+    /// How many rows the content moved from the frame before, and how many of them are in the
+    /// capture, all but those past the limit.
+    moved: usize,
+    taken: usize,
 }
 
 /// The stitch so far: down from the run's first frame, then up from it.
 pub struct Stitch {
-    /// The run's first frame, until the stitch turns up from it.
-    start: Option<Frame>,
-    /// The frame the next one joins to.
-    last: Frame,
+    /// The run's first frame, which every frame's bands are compared with.
+    start: Frame,
+    /// The frame the next one joins to, unless that is the start frame.
+    last: Option<Frame>,
     up: bool,
     height: usize,
+    /// The bands of the frames joined, none until a frame has joined the start frame.
+    bands: Option<Bands>,
+    joins: Vec<Join>,
 }
 
 impl Stitch {
@@ -133,27 +180,24 @@ impl Stitch {
     pub fn new(start: Frame) -> Stitch {
         Stitch {
             height: start.height(),
-            last: start.clone(),
-            start: Some(start),
+            start,
+            last: None,
             up: false,
+            bands: None,
+            joins: Vec::new(),
         }
     }
 
-    /// How tall the stitch is, in rows.
+    /// How tall the stitch is, in rows, with each band counted once.
     pub fn height(&self) -> usize {
         self.height
-    }
-
-    /// Whether the stitch has turned up.
-    pub fn up(&self) -> bool {
-        self.up
     }
 
     /// Turns the stitch up, so the next frame joins to the first frame, which the content has
     /// been scrolled back to, going up from it.
     pub fn turn(&mut self) {
-        if let Some(start) = self.start.take() {
-            self.last = start;
+        if !self.up {
+            self.last = None;
             self.up = true;
         }
     }
@@ -164,8 +208,9 @@ impl Stitch {
     pub fn back(&mut self, frame: Frame) -> Verdict {
         // Short of the first frame, the frame shows the content below it, as a frame going the
         // other way would.
-        if offset(&self.last, &frame, self.up).is_none()
-            && offset(&self.last, &frame, !self.up).is_some()
+        if let Some(bands) = self.bands_with(&frame)
+            && self.offset(&frame, bands, self.up).is_none()
+            && self.offset(&frame, bands, !self.up).is_some()
         {
             return Verdict::Unmoved;
         }
@@ -174,20 +219,38 @@ impl Stitch {
 
     /// Joins `frame`, the one after the last, to the stitch.
     pub fn add(&mut self, frame: Frame) -> Verdict {
-        let Some(moved) = offset(&self.last, &frame, self.up) else {
+        if frame.height() != self.start.height() {
             return Verdict::Lost;
-        };
-        if moved == 0 {
-            return Verdict::Unmoved;
         }
+        // The same as the start frame throughout: nothing has moved.
+        let Some(bands) = self.bands_with(&frame) else {
+            return Verdict::Unmoved;
+        };
+        let moved = match self.offset(&frame, bands, self.up) {
+            Some(0) => return Verdict::Unmoved,
+            Some(moved) => moved,
+            // A caret or a hover that changed a few rows of a frame that did not move leaves only
+            // those rows between its bands, and nothing lines up there: whether it moved is then
+            // told on the rows between the bands so far.
+            None if self.offset(&frame, self.bands.unwrap_or(Bands::NONE), self.up) == Some(0) => {
+                return Verdict::Unmoved;
+            }
+            None => return Verdict::Lost,
+        };
         let height = frame.height();
-        let fits = moved.min(LIMIT - self.height);
-        self.height += fits;
-        self.last = frame;
+        let taken = moved.min(LIMIT - self.height);
+        self.height += taken;
+        self.bands = Some(bands);
+        self.joins.push(Join {
+            up: self.up,
+            moved,
+            taken,
+        });
+        self.last = Some(frame);
         let rows = if self.up {
-            moved - fits..moved
+            0..bands.top + moved
         } else {
-            height - moved..height - moved + fits
+            height - bands.bottom - moved..height
         };
         if self.height == LIMIT {
             Verdict::Full(rows)
@@ -195,18 +258,83 @@ impl Stitch {
             Verdict::Joined(rows)
         }
     }
+
+    /// The capture's rows, top to bottom, each once: the top band, the rows joined above the start
+    /// frame, the start frame's rows between the bands, the rows joined below it, and the bottom
+    /// band. The rows of a frame are among those its verdict gave.
+    pub fn pieces(&self) -> Vec<Piece> {
+        let height = self.start.height();
+        let Bands { top, bottom } = self.bands.unwrap_or(Bands::NONE);
+        // Each join with its frame's number.
+        let numbered = || self.joins.iter().zip(1..self.joins.len() + 1);
+        let mut pieces = vec![Piece {
+            frame: 0,
+            rows: 0..top,
+        }];
+        // Going up, a frame's new rows are just under the top band, the farthest up first.
+        for (join, frame) in numbered().rev().filter(|(join, _)| join.up) {
+            let to = top + join.moved;
+            pieces.push(Piece {
+                frame,
+                rows: to - join.taken..to,
+            });
+        }
+        pieces.push(Piece {
+            frame: 0,
+            rows: top..height - bottom,
+        });
+        // Going down, just over the bottom band.
+        for (join, frame) in numbered().filter(|(join, _)| !join.up) {
+            let from = height - bottom - join.moved;
+            pieces.push(Piece {
+                frame,
+                rows: from..from + join.taken,
+            });
+        }
+        pieces.push(Piece {
+            frame: 0,
+            rows: height - bottom..height,
+        });
+        pieces.retain(|piece| !piece.rows.is_empty());
+        pieces
+    }
+
+    /// The bands of the frames joined with `frame` among them: the rows at the top and bottom
+    /// that are the same in it and in the start frame, and in the bands so far. None if every row
+    /// is.
+    fn bands_with(&self, frame: &Frame) -> Option<Bands> {
+        let height = self.start.height();
+        let Bands { top, bottom } = self.bands.unwrap_or(Bands {
+            top: height,
+            bottom: height,
+        });
+        let top = (0..top).take_while(|&y| frame.same(&self.start, y)).count();
+        let bottom = (0..bottom.min(height - top))
+            .take_while(|&y| frame.same(&self.start, height - 1 - y))
+            .count();
+        (top + bottom < height).then_some(Bands { top, bottom })
+    }
+
+    /// How many rows `new` has moved on from the last frame, scrolled down, or up when `up`,
+    /// compared on the rows between `bands`.
+    fn offset(&self, new: &Frame, bands: Bands, up: bool) -> Option<usize> {
+        let last = self.last.as_ref().unwrap_or(&self.start);
+        offset(last.between(bands), new.between(bands), up)
+    }
 }
 
-/// How many rows `new` has moved on from `last`, scrolled down, or up when `up`: the offset at
-/// which the most rows line up, with few enough differing. A row lines up when every block that
-/// tells something in either frame is the same in both, and differs when one is not; a row with
-/// nothing telling in it counts neither way, so a full-width strip that differs weighs no more
-/// than a row of sparse text that lines up. None if it lines up nowhere.
-fn offset(last: &Frame, new: &Frame, up: bool) -> Option<usize> {
-    let height = last.height();
-    if new.height() != height {
+/// How many rows `new` has moved on from `last`, both given as rows, scrolled down, or up when
+/// `up`: the offset at which the most rows line up, with few enough differing. A row lines up
+/// when every block that tells something in either frame is the same in both, and differs when
+/// one is not; a row with nothing telling in it counts neither way, so a full-width strip that
+/// differs weighs no more than a row of sparse text that lines up. None if it lines up nowhere.
+fn offset(last: &[Vec<Block>], new: &[Vec<Block>], up: bool) -> Option<usize> {
+    let height = last.len();
+    if new.len() != height {
         return None;
     }
+    // Row `at`, counted from the top, or from the bottom when `up`.
+    let at_row = |at: usize| if up { height - 1 - at } else { at };
     // (offset, rows lined up)
     let mut best: Option<(usize, usize)> = None;
     for moved in 0..height {
@@ -219,7 +347,7 @@ fn offset(last: &Frame, new: &Frame, up: bool) -> Option<usize> {
         for at in 0..overlap {
             let mut telling = false;
             let mut same = true;
-            for (old, now) in last.row(at + moved, up).iter().zip(new.row(at, up)) {
+            for (old, now) in last[at_row(at + moved)].iter().zip(&new[at_row(at)]) {
                 if old.plain && now.plain {
                     continue;
                 }
@@ -366,9 +494,16 @@ mod tests {
         // 384 more fit: the rows nearest the join.
         assert_eq!(
             stitch.add(Frame::of(&rows(26 * 600))),
-            Verdict::Full(400..784)
+            Verdict::Full(400..1000)
         );
         assert_eq!(stitch.height(), LIMIT);
+        assert_eq!(
+            stitch.pieces().last(),
+            Some(&Piece {
+                frame: 26,
+                rows: 400..784
+            })
+        );
 
         // Going up, the rows nearest the join are the frame's lowest new ones.
         let mut stitch = Stitch::new(Frame::of(&rows(20_000)));
@@ -381,9 +516,180 @@ mod tests {
         }
         assert_eq!(
             stitch.add(Frame::of(&rows(20_000 - 26 * 600))),
-            Verdict::Full(216..600)
+            Verdict::Full(0..600)
         );
         assert_eq!(stitch.height(), LIMIT);
+        assert_eq!(
+            stitch.pieces().first(),
+            Some(&Piece {
+                frame: 26,
+                rows: 216..600
+            })
+        );
+    }
+
+    /// The rows of a capture made of `kept`, the frames that joined, start frame first, each
+    /// kept whole.
+    fn capture(stitch: &Stitch, kept: &[Vec<u64>]) -> Vec<u64> {
+        stitch
+            .pieces()
+            .into_iter()
+            .flat_map(|piece| kept[piece.frame][piece.rows].to_vec())
+            .collect()
+    }
+
+    /// A frame 20 rows tall of a page of 100 rows, 0 to 99, showing from row `from` between a
+    /// header of 3 rows and a footer of 2 that never move.
+    fn banded(from: u64) -> Vec<u64> {
+        [1000, 1001, 1002]
+            .into_iter()
+            .chain(from..from + 15)
+            .chain([2000, 2001])
+            .collect()
+    }
+
+    #[test]
+    fn rows_the_same_in_every_frame_at_the_top_and_bottom_are_in_the_capture_once() {
+        let mut kept = vec![banded(40)];
+        let mut stitch = Stitch::new(Frame::of(&kept[0]));
+        for from in [50, 60, 70, 80, 85] {
+            assert!(matches!(
+                stitch.add(Frame::of(&banded(from))),
+                Verdict::Joined(_)
+            ));
+            kept.push(banded(from));
+        }
+        assert_eq!(stitch.add(Frame::of(&banded(85))), Verdict::Unmoved);
+        stitch.turn();
+        assert_eq!(stitch.back(Frame::of(&banded(40))), Verdict::Unmoved);
+        for from in [30, 20, 10, 0] {
+            assert!(matches!(
+                stitch.add(Frame::of(&banded(from))),
+                Verdict::Joined(_)
+            ));
+            kept.push(banded(from));
+        }
+        assert_eq!(stitch.add(Frame::of(&banded(0))), Verdict::Unmoved);
+        let expected: Vec<u64> = [1000, 1001, 1002]
+            .into_iter()
+            .chain(0..100)
+            .chain([2000, 2001])
+            .collect();
+        assert_eq!(capture(&stitch, &kept), expected);
+        assert_eq!(stitch.height(), 105);
+    }
+
+    #[test]
+    fn a_row_that_changes_ends_the_band() {
+        // A header whose second row is a clock, ticking every frame, over a fixed row, and a
+        // footer whose last row is fixed but whose row above it ticks too: only the rows outside
+        // the ticking ones are bands. The ticking rows and the fixed row inside them are content,
+        // and repeat with each frame's rows, hiding what scrolls under them, as on screen.
+        let frame = |from: u64, tick: u64| -> Vec<u64> {
+            [1000, 500 + tick, 1002]
+                .into_iter()
+                .chain(from..from + 35)
+                .chain([600 + tick, 2001])
+                .collect()
+        };
+        let kept = vec![frame(0, 0), frame(6, 1)];
+        let mut stitch = Stitch::new(Frame::of(&kept[0]));
+        assert_eq!(stitch.add(Frame::of(&kept[1])), Verdict::Joined(33..40));
+        let expected: Vec<u64> = [1000, 500, 1002]
+            .into_iter()
+            .chain(0..35)
+            .chain([600])
+            .chain(36..41)
+            .chain([601, 2001])
+            .collect();
+        assert_eq!(capture(&stitch, &kept), expected);
+    }
+
+    #[test]
+    fn a_run_of_one_frame_has_no_bands_and_is_the_frame() {
+        let kept = vec![banded(40)];
+        let mut stitch = Stitch::new(Frame::of(&kept[0]));
+        assert_eq!(capture(&stitch, &kept), banded(40));
+        // A window that did not scroll: every row is the same as the start's, a band of the
+        // whole frame, which is the same one frame.
+        assert_eq!(stitch.add(Frame::of(&banded(40))), Verdict::Unmoved);
+        stitch.turn();
+        assert_eq!(stitch.back(Frame::of(&banded(40))), Verdict::Unmoved);
+        assert_eq!(stitch.add(Frame::of(&banded(40))), Verdict::Unmoved);
+        assert_eq!(capture(&stitch, &kept), banded(40));
+        assert_eq!(stitch.height(), 20);
+    }
+
+    #[test]
+    fn a_frame_that_did_not_move_is_the_end_of_a_direction_whatever_changed_in_it() {
+        // A blinking caret changes one row in the middle: every other row is the same as the
+        // start's, but they are not bands, since nothing has moved.
+        let mut caret = banded(40);
+        caret[10] = 777;
+        let mut stitch = Stitch::new(Frame::of(&banded(40)));
+        assert_eq!(stitch.add(Frame::of(&caret)), Verdict::Unmoved);
+        // And once frames have joined.
+        assert!(matches!(
+            stitch.add(Frame::of(&banded(50))),
+            Verdict::Joined(_)
+        ));
+        let mut caret = banded(50);
+        caret[10] = 777;
+        assert_eq!(stitch.add(Frame::of(&caret)), Verdict::Unmoved);
+        stitch.turn();
+        let mut caret = banded(40);
+        caret[12] = 777;
+        assert_eq!(stitch.back(Frame::of(&caret)), Verdict::Unmoved);
+    }
+
+    #[test]
+    fn a_header_far_taller_than_what_scrolls_cannot_pass_for_nothing_moving() {
+        // 40 rows of header over 4 of content, moved 1: on the whole frame, the header's rows line
+        // up where nothing moved and outweigh the 4 that do not.
+        let frame = |from: u64| -> Vec<u64> { (1000..1040).chain(from..from + 4).collect() };
+        let mut stitch = Stitch::new(Frame::of(&frame(0)));
+        assert_eq!(stitch.add(Frame::of(&frame(1))), Verdict::Joined(43..44));
+    }
+
+    #[test]
+    fn frames_join_on_the_rows_between_the_bands_so_a_tall_header_cannot_spoil_the_join() {
+        // A header of 8 rows over 12 of content, moved 6: without the bands, the header would
+        // differ from the content above it at the join in 8 rows of the 14 compared.
+        let frame = |from: u64| -> Vec<u64> { (1000..1008).chain(from..from + 12).collect() };
+        let kept = vec![frame(0), frame(6), frame(12)];
+        let mut stitch = Stitch::new(Frame::of(&kept[0]));
+        assert_eq!(stitch.add(Frame::of(&kept[1])), Verdict::Joined(14..20));
+        assert_eq!(stitch.add(Frame::of(&kept[2])), Verdict::Joined(14..20));
+        let expected: Vec<u64> = (1000..1008).chain(0..24).collect();
+        assert_eq!(capture(&stitch, &kept), expected);
+    }
+
+    #[test]
+    fn a_header_is_a_band_beside_a_scrollbar_thumb_that_moves() {
+        // A header of 10 rows, the same in every frame but for the thumb, which starts beside it
+        // and moves down the right 4 columns as the page scrolls.
+        let frame = |from: usize, thumb: Range<usize>| -> Vec<u8> {
+            let mut pixels = page(from, 120, thumb);
+            for y in 0..10 {
+                for x in 0..60 {
+                    let at = (y * 64 + x) * 4;
+                    pixels[at..at + 3].copy_from_slice(&[40, (x * 3) as u8, y as u8]);
+                }
+            }
+            pixels
+        };
+        let mut stitch = Stitch::new(Frame::from_pixels(&frame(0, 0..20), 64));
+        assert_eq!(
+            stitch.add(Frame::from_pixels(&frame(56, 12..32), 64)),
+            Verdict::Joined(60..120)
+        );
+        assert_eq!(
+            stitch.pieces()[0],
+            Piece {
+                frame: 0,
+                rows: 0..10
+            }
+        );
     }
 
     /// The pixels of a page 64 wide and `height` tall, showing from row `from` of a page of
@@ -444,10 +750,12 @@ mod tests {
     fn a_sparse_list_joins_however_far_its_thumb_moves() {
         // Half the frame's height of thumb, moved a quarter of it: most of the scrollbar differs
         // from the last frame at the true join, and its track is alike at every offset.
+        // The first two frames end in two white rows, a band, kept with the 30 new rows above
+        // them; the third ends in a line's number, so the band is gone.
         let mut stitch = Stitch::new(Frame::from_pixels(&list(0, 0..60), 64));
         assert_eq!(
             stitch.add(Frame::from_pixels(&list(30, 15..75), 64)),
-            Verdict::Joined(90..120)
+            Verdict::Joined(88..120)
         );
         assert_eq!(
             stitch.add(Frame::from_pixels(&list(60, 30..90), 64)),
@@ -457,10 +765,11 @@ mod tests {
 
     #[test]
     fn frames_join_on_their_pixels_whatever_the_scrollbar_does() {
+        // Both frames end in two white rows, a band, kept with the 70 new rows above them.
         let mut stitch = Stitch::new(Frame::from_pixels(&page(0, 120, 0..20), 64));
         assert_eq!(
             stitch.add(Frame::from_pixels(&page(70, 120, 12..32), 64)),
-            Verdict::Joined(50..120)
+            Verdict::Joined(48..120)
         );
         // A blinking caret, or the thumb redrawn, is not a move.
         let mut caret = page(70, 120, 12..33);
