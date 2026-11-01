@@ -33,6 +33,7 @@ mod slide;
 mod startup;
 mod style;
 mod theme;
+mod timed;
 mod tooltip;
 mod view;
 mod wallpaper;
@@ -76,14 +77,14 @@ use windows::{
             WindowsAndMessaging::{
                 AppendMenuW, CallNextHookEx, CreatePopupMenu, CreateWindowExW, DestroyMenu,
                 DispatchMessageW, GetForegroundWindow, GetMessageW, HICON, IMAGE_ICON,
-                LR_DEFAULTCOLOR, LoadImageW, MF_SEPARATOR, MF_STRING, MSG, MSGF_MENU, PM_REMOVE,
-                PeekMessageW, PostQuitMessage, RegisterClassW, SM_CXSMICON, SPI_GETSELECTIONFADE,
-                SPI_GETUIEFFECTS, SYSTEM_METRICS_INDEX, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-                SetForegroundWindow, SetWindowsHookExW, SystemParametersInfoW, TPM_RETURNCMD,
-                TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, UnhookWindowsHookEx,
-                WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY,
-                WM_ENDSESSION, WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION, WM_QUIT, WM_TIMER,
-                WNDCLASSW, WS_OVERLAPPED,
+                LR_DEFAULTCOLOR, LoadImageW, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, MSGF_MENU,
+                PM_REMOVE, PeekMessageW, PostQuitMessage, RegisterClassW, SM_CXSMICON,
+                SPI_GETSELECTIONFADE, SPI_GETUIEFFECTS, SYSTEM_METRICS_INDEX,
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetForegroundWindow, SetWindowsHookExW,
+                SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+                TranslateMessage, UnhookWindowsHookEx, WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP,
+                WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_NULL,
+                WM_QUERYENDSESSION, WM_QUIT, WM_TIMER, WNDCLASSW, WS_OVERLAPPED,
             },
         },
     },
@@ -300,6 +301,14 @@ unsafe extern "system" fn window_proc(
                 cancel_waiting(hwnd);
                 start(hwnd, mode, previous, record::state());
             }
+            LRESULT(0)
+        }
+        WM_TIMER if wparam.0 == timed::TIMER => {
+            win32::kill_timer(hwnd, timed::TIMER);
+            // Read now, not at the click: the user has been setting the screen up since. Not the
+            // window in front either: the tray menu left the hidden tray window there, and it
+            // stays until the user clicks into something.
+            capture_screen(hwnd, window::valid(window::before_taskbar()));
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == MENU_FADE_TIMER => {
@@ -700,6 +709,13 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
         let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE, w!("Capture"));
         let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE_WINDOW, w!("Capture window"));
         let _ = AppendMenuW(menu, MF_STRING, ID_CAPTURE_SCREEN, w!("Capture screen"));
+        // Destroyed with the menu.
+        if let Ok(times) = CreatePopupMenu() {
+            for time in timed::TIMES {
+                let _ = AppendMenuW(times, MF_STRING, time.menu_id, &HSTRING::from(time.text));
+            }
+            let _ = AppendMenuW(menu, MF_POPUP, times.0 as usize, w!("Capture screen in"));
+        }
         let _ = AppendMenuW(menu, MF_STRING, ID_COPY_TEXT, w!("Copy text"));
         let _ = AppendMenuW(menu, MF_STRING, ID_RECORD, &record_entry);
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
@@ -739,7 +755,15 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
             ID_QUIT => {
                 win32::destroy(hwnd);
             }
-            _ => {}
+            // Counted from the click, so the fade passes inside the time. Setting the timer
+            // again restarts it, so a second choice replaces the one waiting.
+            id => {
+                if let Some(ms) = timed::ms_for(id)
+                    && !win32::set_timer(hwnd, timed::TIMER, ms)
+                {
+                    notify(hwnd, "Capture failed");
+                }
+            }
         }
     }
 }
