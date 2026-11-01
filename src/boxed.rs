@@ -4,6 +4,7 @@
 //! frozen picture, in a recording or in a run's frames.
 
 use windows::{
+    Graphics::Capture::GraphicsCaptureItem,
     Win32::{
         Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
@@ -106,14 +107,16 @@ fn brush(rgb: u32) -> HBRUSH {
 pub enum Chosen {
     /// A region, in physical pixels of its screen.
     Region(Selection),
-    /// A window, whose visible frame the box goes around.
-    Window(HWND),
+    /// A window, whose visible frame the box goes around, and its capture item, made when the
+    /// overlay showed it, so the one it showed is the one captured whatever its handle comes to
+    /// mean.
+    Window(HWND, Result<GraphicsCaptureItem>),
 }
 
 /// Where a box goes on `screen`: the screen's bounds on the desktop and its work area, and the
 /// area of `chosen`, in physical pixels of the screen. A window clicked is boxed at its visible
 /// frame as it is now, within the screen. No area if nothing of `chosen` is on the screen.
-pub fn place(screen: HMONITOR, chosen: Chosen) -> Result<(RECT, RECT, Option<Selection>)> {
+pub fn place(screen: HMONITOR, chosen: &Chosen) -> Result<(RECT, RECT, Option<Selection>)> {
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
@@ -122,8 +125,8 @@ pub fn place(screen: HMONITOR, chosen: Chosen) -> Result<(RECT, RECT, Option<Sel
     unsafe { GetMonitorInfoW(screen, &mut info).ok()? };
     let bounds = info.rcMonitor;
     let area = match chosen {
-        Chosen::Region(selection) => Some(selection),
-        Chosen::Window(hwnd) => within(window::frame(hwnd)?, bounds),
+        Chosen::Region(selection) => Some(*selection),
+        Chosen::Window(hwnd, _) => within(window::frame(*hwnd)?, bounds),
     };
     Ok((bounds, info.rcWork, area))
 }
@@ -140,7 +143,7 @@ pub fn on_desktop(area: Selection, bounds: RECT) -> RECT {
 
 /// The part of `frame`, in physical pixels of the desktop, on the screen at `screen`, in physical
 /// pixels of that screen, or none if no part is.
-fn within(frame: RECT, screen: RECT) -> Option<Selection> {
+pub fn within(frame: RECT, screen: RECT) -> Option<Selection> {
     let (left, top) = (frame.left.max(screen.left), frame.top.max(screen.top));
     let (right, bottom) = (
         frame.right.min(screen.right),

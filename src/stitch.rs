@@ -36,11 +36,18 @@ pub struct Frame {
 
 impl Frame {
     /// The frame of `pixels`, 4 bytes each in top-down rows `width` pixels wide.
+    #[cfg(test)]
     pub fn from_pixels(pixels: &[u8], width: usize) -> Frame {
-        let across = BLOCKS.min(width).max(1);
+        Frame::from_columns(pixels, width, 0..width)
+    }
+
+    /// The frame of `columns` of `pixels`, 4 bytes each in top-down rows `width` pixels wide.
+    pub fn from_columns(pixels: &[u8], width: usize, columns: Range<usize>) -> Frame {
+        let across = BLOCKS.min(columns.len()).max(1);
         let rows = pixels
             .chunks_exact(width.max(1) * 4)
             .map(|row| {
+                let (row, width) = (&row[columns.start * 4..columns.end * 4], columns.len());
                 (0..across)
                     .map(|block| {
                         let part =

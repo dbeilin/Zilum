@@ -56,10 +56,7 @@ use windows::{
         Foundation::{
             ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, SYSTEMTIME, WPARAM,
         },
-        Graphics::{
-            Direct3D11::ID3D11Texture2D,
-            Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
-        },
+        Graphics::{Direct3D11::ID3D11Texture2D, Gdi::HMONITOR},
         System::{
             LibraryLoader::GetModuleHandleW,
             Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
@@ -667,29 +664,19 @@ pub fn deliver_window(
     purpose: Purpose,
 ) {
     let grabbed = item.and_then(|item| {
-        let bounds = window::frame(window)?;
-        // The frame's colours are relative to the white of the screen the window is mostly on.
-        // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
-        let shown_on = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+        let (bounds, shown_on) = window::placed(window)?;
         let frame = capture::grab_item(&item)?;
         // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
         Ok((bounds, shown_on, frame, unsafe { GetLocalTime() }))
     });
     match grabbed {
         Ok((bounds, shown_on, frame, taken)) => {
-            // The frame starts at the visible frame's top-left; past its size is anything.
-            let whole = Selection {
-                left: 0,
-                top: 0,
-                width: bounds.right - bounds.left,
-                height: bounds.bottom - bounds.top,
-            };
             deliver(
                 tray,
                 &frame,
                 shown_on,
                 taken,
-                whole,
+                window::whole(bounds),
                 Some(bounds),
                 screen,
                 previous,

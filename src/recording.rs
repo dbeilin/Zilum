@@ -27,7 +27,7 @@ use windows::Win32::{
 };
 
 use crate::{
-    capture::Stream,
+    capture::{self, Stream},
     clipboard, graphics,
     image::Region,
     pixels,
@@ -300,7 +300,9 @@ fn capture(
     jobs: &Sender<Job>,
     busy: &AtomicBool,
 ) -> Option<u32> {
-    let Ok(mut stream) = Stream::start(screen, TICK, true) else {
+    let Ok(mut stream) =
+        capture::screen_item(screen).and_then(|item| Stream::start(&item, TICK, true))
+    else {
         return None;
     };
     let mut timing = Timing::default();

@@ -6,7 +6,10 @@ use std::cell::Cell;
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, RECT},
-        Graphics::Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
+        Graphics::{
+            Dwm::{DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute},
+            Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
+        },
         System::Threading::GetCurrentProcessId,
         UI::{
             Accessibility::{HWINEVENTHOOK, SetWinEventHook},
@@ -21,7 +24,7 @@ use windows::{
     core::{BOOL, Result},
 };
 
-use crate::selection::Point;
+use crate::selection::{Point, Selection};
 use crate::win32;
 
 /// Window classes of the taskbar, on each screen, and of the tray icons it hides.
@@ -211,6 +214,27 @@ pub fn frame(window: HWND) -> Result<RECT> {
         )?;
     }
     Ok(frame)
+}
+
+/// Where `window`'s visible frame is on the desktop, and the screen it is mostly on, whose white
+/// the colours of a capture of it are relative to.
+pub fn placed(window: HWND) -> Result<(RECT, HMONITOR)> {
+    let frame = frame(window)?;
+    // SAFETY: Takes a handle and an integer.
+    Ok((frame, unsafe {
+        MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST)
+    }))
+}
+
+/// The part of a capture of a window whose visible frame is at `frame` that shows the window: a
+/// window's capture starts at its visible frame's top-left, and past its size is anything.
+pub fn whole(frame: RECT) -> Selection {
+    Selection {
+        left: 0,
+        top: 0,
+        width: frame.right - frame.left,
+        height: frame.bottom - frame.top,
+    }
 }
 
 /// The top-level window `hwnd` belongs to, or `hwnd` itself when it has none.

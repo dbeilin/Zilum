@@ -8,10 +8,12 @@
 
 use std::{
     cell::RefCell,
+    ops::Range,
     time::{Duration, Instant},
 };
 
 use windows::{
+    Graphics::Capture::GraphicsCaptureItem,
     Win32::{
         Foundation::{HWND, LPARAM, RECT, SYSTEMTIME, WPARAM},
         Graphics::{
@@ -33,11 +35,12 @@ use windows::{
 use crate::{
     bar::{self, Paint, Tone},
     boxed::{self, Chosen, HEIGHT, Layout, PillWindow},
-    capture::Stream,
+    capture::{self, Stream},
     graphics,
     image::Image,
     notice, pixels,
-    selection::{Point, Selection},
+    selection::Selection,
+    settings,
     stitch::{Frame, Stitch, Verdict},
     theme::Palette,
     win32, window,
@@ -99,6 +102,13 @@ struct Run {
     area: Selection,
     /// The screen's bounds on the desktop.
     bounds: RECT,
+    /// Where the frames come from.
+    source: Source,
+    /// The window's capture item, until the run's thread takes it.
+    item: Option<GraphicsCaptureItem>,
+    /// The window's visible frame on the desktop and the screen it is mostly on, as they were
+    /// when the run began.
+    placed: Option<(RECT, HMONITOR)>,
     /// The window the user was in, which keeps the keyboard, and gets it back when the editor
     /// leaves untouched.
     previous: Option<HWND>,
@@ -138,14 +148,9 @@ pub fn start(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWN
         Ok(Some(run)) => {
             let (bounds, area) = (run.bounds, run.area);
             RUN.set(Some(run));
-            let parked = park(area);
+            let (x, y) = park(area, bounds);
             // SAFETY: Takes only integers.
-            let _ = unsafe {
-                SetCursorPos(
-                    bounds.left + area.left + parked.x,
-                    bounds.top + area.top + parked.y,
-                )
-            };
+            let _ = unsafe { SetCursorPos(x, y) };
             if !win32::set_timer(tray, TIMER, GRAB_MS) {
                 end();
                 crate::notify(tray, "Capture failed");
@@ -159,22 +164,54 @@ pub fn start(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWN
 /// Begins the run's steps and frames on their own thread, now the overlay has gone. The thread
 /// posts `WM_GROWN` as the capture grows and `WM_SCROLLED` when the run ends.
 pub fn begin() {
-    let Some((tray, screen, area, scale)) = RUN.with_borrow(|run| {
-        run.as_ref()
-            .map(|run| (run.tray, run.screen, run.area, run.pill.scale))
+    let Some((tray, screen, area, source, item, scale)) = RUN.with_borrow_mut(|run| {
+        run.as_mut().map(|run| {
+            let item = run.item.take();
+            (
+                run.tray,
+                run.screen,
+                run.area,
+                run.source,
+                item,
+                run.pill.scale,
+            )
+        })
     }) else {
         return;
     };
     win32::kill_timer(tray, TIMER);
+    // A window's frames come from its item, whole from its visible frame's top-left, with their
+    // colours relative to the white of the screen it is mostly on.
+    let window = match source {
+        Source::Screen => None,
+        Source::Window(window) => match (item, window::placed(window)) {
+            (Some(item), Ok((frame, shown_on))) => {
+                RUN.with_borrow_mut(|run| {
+                    if let Some(run) = run {
+                        run.placed = Some((frame, shown_on));
+                    }
+                });
+                Some((item, window::whole(frame), shown_on.0 as isize))
+            }
+            _ => {
+                end();
+                crate::notify(tray, "Capture failed");
+                return;
+            }
+        },
+    };
     // SAFETY: Takes nothing. Waits for DWM's next frame, which no longer holds the overlay.
     let _ = unsafe { DwmFlush() };
+    // Handles cross to the thread as integers.
     let (screen_id, to) = (screen.0 as isize, tray.0 as isize);
     let started = std::thread::Builder::new().spawn(move || {
         graphics::init_apartment();
         let tray = HWND(to as _);
+        let window = window.map(|(item, part, shown_on)| (item, part, HMONITOR(shown_on as _)));
         let capture = Box::into_raw(Box::new(scroll(
             HMONITOR(screen_id as _),
             area,
+            window,
             scale,
             tray,
         )));
@@ -211,14 +248,26 @@ pub fn grown(height: usize) {
 pub unsafe fn finished(lparam: LPARAM) {
     // SAFETY: `begin` made it with Box::into_raw, and the caller takes it once.
     let capture = *unsafe { Box::from_raw(lparam.0 as *mut Option<Image>) };
-    let Some((tray, previous)) =
-        RUN.with_borrow(|run| run.as_ref().map(|run| (run.tray, run.previous)))
+    let Some((tray, previous, placed)) =
+        RUN.with_borrow(|run| run.as_ref().map(|run| (run.tray, run.previous, run.placed)))
     else {
         return;
     };
+    // A window that draws nothing comes back with every pixel transparent, as Capture window
+    // finds it.
+    let capture = capture.filter(|image| placed.is_none() || !image.is_blank());
     match capture {
         // The parked pointer is in no frame: the run's frames leave it out.
-        Some(image) => crate::open_capture(image, tray, previous),
+        Some(image) => {
+            // A window's gets its background, as a Window capture does.
+            let image = match placed {
+                Some((frame, shown_on)) => settings::current()
+                    .window_background
+                    .around(image, frame, shown_on),
+                None => image,
+            };
+            crate::open_capture(image, tray, previous);
+        }
         None => crate::notify(tray, "Capture failed"),
     }
     end();
@@ -235,6 +284,27 @@ fn end() {
     }
 }
 
+/// Where a run's frames come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    /// The area's rectangle of the screen, whatever is in it.
+    Screen,
+    /// The window's own picture, whole, as a Window capture takes it: a window covering it is not
+    /// in it, and a part past the screen's edge is.
+    Window(HWND),
+}
+
+impl Source {
+    /// Where the frames come from for what was `chosen` on the overlay: a window clicked gives the
+    /// window, and a region dragged, the screen included, gives the screen.
+    fn of(chosen: &Chosen) -> Source {
+        match chosen {
+            Chosen::Region(_) => Source::Screen,
+            Chosen::Window(window, _) => Source::Window(*window),
+        }
+    }
+}
+
 impl Run {
     /// The box around `chosen` on `screen` and its pill, shown, or none if nothing of `chosen` is
     /// on `screen`.
@@ -244,13 +314,19 @@ impl Run {
         previous: Option<HWND>,
         tray: HWND,
     ) -> Result<Option<Run>> {
-        let (bounds, work, area) = boxed::place(screen, chosen)?;
+        let (bounds, work, area) = boxed::place(screen, &chosen)?;
         let Some(area) = area else {
             return Ok(None);
         };
-        let chosen = boxed::on_desktop(area, bounds);
-        let line = boxed::line_window(chosen, bounds)?;
-        let pill = match Pill::new(screen, chosen, work, area.height as usize) {
+        let source = Source::of(&chosen);
+        // A window whose item could not be made is a failed capture, as Capture window finds it.
+        let item = match chosen {
+            Chosen::Window(_, item) => Some(item?),
+            Chosen::Region(_) => None,
+        };
+        let boxed = boxed::on_desktop(area, bounds);
+        let line = boxed::line_window(boxed, bounds)?;
+        let pill = match Pill::new(screen, boxed, work, area.height as usize) {
             Ok(pill) => pill,
             Err(error) => {
                 if let Some(line) = line {
@@ -264,6 +340,9 @@ impl Run {
             screen,
             area,
             bounds,
+            source,
+            item,
+            placed: None,
             previous,
             line,
             pill,
@@ -357,14 +436,22 @@ impl Pill {
     }
 }
 
-/// Scrolls the content under the parked pointer and joins the frames of `area` of `screen`, taken
-/// after each step, into one capture: down to the end, back to the start, up to the top. A step is
-/// one for `area`'s height on a screen at `scale`. Posts the height to `tray` as it grows. None if
-/// not even the first frame could be taken. A frame that cannot be taken is a join lost.
-fn scroll(screen: HMONITOR, area: Selection, scale: f32, tray: HWND) -> Option<Image> {
+/// Scrolls the content under the parked pointer and joins the frames, taken after each step, into
+/// one capture: down to the end, back to the start, up to the top. The frames are `area` of
+/// `screen`, the box's, or after a window click `window`: its capture item, the part of its frames
+/// that shows it, and the screen whose white their colours are relative to. A step is one for
+/// `area`'s height on a screen at `scale`. Posts the height to `tray` as it grows. None if not
+/// even the first frame could be taken. A frame that cannot be taken is a join lost.
+fn scroll(
+    screen: HMONITOR,
+    area: Selection,
+    window: Option<(GraphicsCaptureItem, Selection, HMONITOR)>,
+    scale: f32,
+    tray: HWND,
+) -> Option<Image> {
     // SAFETY: Takes nothing.
     let taken = unsafe { GetLocalTime() };
-    let mut frames = Frames::start(screen, area)?;
+    let mut frames = Frames::start(screen, area, window)?;
     let mut joined = Joined::new(frames.first()?, tray);
     let step = notches(area.height, scale);
     // The steps down that moved the content, which the way back to the start retraces.
@@ -421,8 +508,10 @@ enum Next {
 /// The pixels a run has joined so far, and the stitch that says where the next frame's go.
 struct Joined {
     stitch: Stitch,
-    /// The area's width, and the scale of the screen it is on, which the capture has.
+    /// The frames' width, and the scale of the screen they are on, which the capture has.
     width: u32,
+    /// The columns the frames join on: inside a window's translucent edges.
+    columns: Range<usize>,
     scale: f32,
     /// The rows kept of each frame that joined, the start frame first: the first row's place in
     /// the frame, and the rows' pixels. The capture is made of them once the bands are known.
@@ -435,9 +524,18 @@ impl Joined {
     /// The capture of the run's `first` frame, which grows down from it and then up, telling
     /// `tray` its height as it does.
     fn new(first: Image, tray: HWND) -> Joined {
+        // A window's first frame is the whole window, taller than the box when it hangs off the
+        // screen.
+        win32::post(tray, WM_GROWN, WPARAM(first.height as usize), LPARAM(0));
+        let columns = inside_edges(&first);
         Joined {
-            stitch: Stitch::new(Frame::from_pixels(&first.pixels, first.width as usize)),
+            stitch: Stitch::new(Frame::from_columns(
+                &first.pixels,
+                first.width as usize,
+                columns.clone(),
+            )),
             width: first.width,
+            columns,
             scale: first.scale,
             kept: vec![(0, first.pixels)],
             tray,
@@ -457,7 +555,7 @@ impl Joined {
     }
 
     fn frame(&self, pixels: &[u8]) -> Frame {
-        Frame::from_pixels(pixels, self.width as usize)
+        Frame::from_columns(pixels, self.width as usize, self.columns.clone())
     }
 
     /// Keeps the rows of `pixels` that `verdict` says the capture may take, and tells the tray
@@ -500,6 +598,21 @@ impl Joined {
     }
 }
 
+/// The columns of `first`, a run's first frame, inside a window's translucent edges, read along its
+/// middle row. Windows draws a window's border down its sides, and its shade differs along it, so
+/// a frame joined on the border would line up nowhere. All of it if it has no such edges, as a
+/// screen's frames have not.
+fn inside_edges(first: &Image) -> Range<usize> {
+    let width = first.width as usize;
+    let middle = first.height as usize / 2 * width * 4;
+    let opaque = |x: &usize| first.pixels[middle + x * 4 + 3] == 255;
+    let Some(left) = (0..width).find(opaque) else {
+        return 0..width;
+    };
+    let right = (0..width).rev().find(opaque).map_or(width, |x| x + 1);
+    left..right
+}
+
 /// Turns the wheel under the pointer by `notches`, up if positive, as a user's hand would, so the
 /// app sees the wheel where the pointer is.
 fn wheel(notches: i32) {
@@ -517,23 +630,38 @@ fn wheel(notches: i32) {
     let _ = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
 }
 
-/// The area's frames as the screen shows them, without the pointer.
+/// A run's frames, without the pointer: the area as the screen shows it, or the window's own
+/// picture.
 struct Frames {
     stream: Stream,
-    screen: HMONITOR,
-    area: Selection,
-    /// The area's pixels as last sampled.
+    /// The screen whose white the frames' colours are relative to.
+    shown_on: HMONITOR,
+    /// The part of each frame read: the area of the screen, or the window's visible frame.
+    part: Selection,
+    /// Whether the frames are a window's, whose translucent edges are kept.
+    window: bool,
+    /// The part's pixels as last sampled.
     last: Vec<u8>,
 }
 
 impl Frames {
-    /// The frames of `area` of `screen`, coming from now on. None if the screen cannot be
-    /// captured.
-    fn start(screen: HMONITOR, area: Selection) -> Option<Frames> {
+    /// The frames coming from now on: of `window` after a window click, as `scroll` has it, and
+    /// otherwise of `area` of `screen`. None if they cannot be captured.
+    fn start(
+        screen: HMONITOR,
+        area: Selection,
+        window: Option<(GraphicsCaptureItem, Selection, HMONITOR)>,
+    ) -> Option<Frames> {
+        let is_window = window.is_some();
+        let (item, part, shown_on) = match window {
+            Some(window) => window,
+            None => (capture::screen_item(screen).ok()?, area, screen),
+        };
         Some(Frames {
-            stream: Stream::start(screen, Duration::from_millis(1), false).ok()?,
-            screen,
-            area,
+            stream: Stream::start(&item, Duration::from_millis(1), false).ok()?,
+            shown_on,
+            part,
+            window: is_window,
             last: Vec::new(),
         })
     }
@@ -578,8 +706,8 @@ impl Frames {
         }
     }
 
-    /// The area's pixels if a frame has come since the last sample, or none if not. None at all
-    /// if the screen can no longer be captured, or no longer holds the area.
+    /// The part's pixels if a frame has come since the last sample, or none if not. None at all
+    /// if the frames can no longer be captured, or no longer hold the part.
     fn sample(&mut self) -> Option<Option<Image>> {
         if !self.stream.refresh().ok()? {
             return Some(None);
@@ -587,9 +715,15 @@ impl Frames {
         let Some(frame) = self.stream.frame().ok()? else {
             return Some(None);
         };
-        let image =
-            pixels::read(&frame, self.screen, SYSTEMTIME::default(), self.area, false).ok()?;
-        (image.width == self.area.width as u32 && image.height == self.area.height as u32)
+        let image = pixels::read(
+            &frame,
+            self.shown_on,
+            SYSTEMTIME::default(),
+            self.part,
+            self.window,
+        )
+        .ok()?;
+        (image.width == self.part.width as u32 && image.height == self.part.height as u32)
             .then_some(Some(image))
     }
 }
@@ -648,13 +782,14 @@ fn height_text(height: usize) -> String {
     text + " px"
 }
 
-/// Where the pointer parks for `area`, in its own pixels: just inside its right edge, where a
-/// scrollbar usually is, halfway down.
-fn park(area: Selection) -> Point {
-    Point {
-        x: (area.width - PARK_INSET).max(0),
-        y: area.height / 2,
-    }
+/// Where the pointer parks for `area` of the screen at `bounds`, on the desktop: just inside its
+/// right edge, where a scrollbar usually is, halfway down. After a window click, `area` is the part
+/// of the window on the screen, since the wheel needs a real window under a real pointer.
+fn park(area: Selection, bounds: RECT) -> (i32, i32) {
+    (
+        bounds.left + area.left + (area.width - PARK_INSET).max(0),
+        bounds.top + area.top + area.height / 2,
+    )
 }
 
 #[cfg(test)]
@@ -671,6 +806,16 @@ mod tests {
         assert_eq!(height_text(1), "1 px");
     }
 
+    /// A screen 2560 by 1440 at `left`, `top` on the desktop.
+    fn screen(left: i32, top: i32) -> RECT {
+        RECT {
+            left,
+            top,
+            right: left + 2560,
+            bottom: top + 1440,
+        }
+    }
+
     #[test]
     fn the_pointer_parks_a_few_pixels_inside_the_right_edge_halfway_down() {
         let area = |width, height| Selection {
@@ -679,11 +824,99 @@ mod tests {
             width,
             height,
         };
-        assert_eq!(park(area(200, 150)), Point { x: 192, y: 75 });
-        assert_eq!(park(area(1920, 1080)), Point { x: 1912, y: 540 });
-        assert_eq!(park(area(640, 1001)), Point { x: 632, y: 500 });
+        let primary = screen(0, 0);
+        assert_eq!(park(area(200, 150), primary), (1192, 675));
+        assert_eq!(park(area(1920, 1080), primary), (2912, 1140));
+        assert_eq!(park(area(640, 1001), primary), (1632, 1100));
         // An area narrower than the inset parks at its left edge, still inside it.
-        assert_eq!(park(area(5, 4)), Point { x: 0, y: 2 });
+        assert_eq!(park(area(5, 4), primary), (1000, 602));
+        // On a screen left of the primary, the area is in that screen's pixels.
+        assert_eq!(park(area(200, 150), screen(-2560, 0)), (-1368, 675));
+    }
+
+    #[test]
+    fn after_a_window_click_the_pointer_parks_in_the_part_of_the_window_on_the_screen() {
+        let window = |left, top, right, bottom| RECT {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        let parked = |frame, screen| park(boxed::within(frame, screen).unwrap(), screen);
+        let primary = screen(0, 0);
+        // Wholly on the screen: as a region of the window's frame does.
+        let region = Selection {
+            left: 100,
+            top: 100,
+            width: 800,
+            height: 600,
+        };
+        assert_eq!(parked(window(100, 100, 900, 700), primary), (892, 400));
+        assert_eq!(park(region, primary), (892, 400));
+        // A third past the screen's right edge: just inside the screen's edge.
+        assert_eq!(parked(window(1960, 100, 2860, 700), primary), (2552, 400));
+        // Past its bottom edge: halfway down the part on the screen.
+        assert_eq!(parked(window(100, 1000, 900, 1900), primary), (892, 1220));
+        // Past its left and top edges.
+        assert_eq!(parked(window(-300, -200, 500, 600), primary), (492, 300));
+        // On the screen left of the primary, hanging over onto the primary.
+        assert_eq!(
+            parked(window(-500, 200, 300, 800), screen(-2560, 0)),
+            (-8, 500)
+        );
+    }
+
+    #[test]
+    fn a_window_click_takes_the_windows_own_frames_and_a_region_the_screens() {
+        let window = HWND(0x1234 as _);
+        // An item that could not be made is still a window clicked.
+        let item = Err(windows::core::Error::from(
+            windows::Win32::Foundation::E_FAIL,
+        ));
+        assert_eq!(
+            Source::of(&Chosen::Window(window, item)),
+            Source::Window(window)
+        );
+        let region = Selection {
+            left: 10,
+            top: 20,
+            width: 300,
+            height: 200,
+        };
+        assert_eq!(Source::of(&Chosen::Region(region)), Source::Screen);
+        // The whole screen is a region of it.
+        let whole = Selection {
+            left: 0,
+            top: 0,
+            width: 2560,
+            height: 1440,
+        };
+        assert_eq!(Source::of(&Chosen::Region(whole)), Source::Screen);
+    }
+
+    /// An image `width` wide and 3 tall, opaque grey, with `left` and `right` columns at its
+    /// edges translucent, as a window's border is.
+    fn bordered(width: usize, left: usize, right: usize) -> Image {
+        let mut pixels = vec![128; width * 3 * 4];
+        for (at, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let x = at % width;
+            pixel[3] = if x < left || x >= width - right {
+                160
+            } else {
+                255
+            };
+        }
+        Image::new(width as u32, 3, pixels, SYSTEMTIME::default(), 1.0)
+    }
+
+    #[test]
+    fn a_windows_frames_join_on_the_columns_inside_its_translucent_edges() {
+        assert_eq!(inside_edges(&bordered(100, 1, 1)), 1..99);
+        assert_eq!(inside_edges(&bordered(100, 2, 1)), 2..99);
+        // The screen's frames are opaque throughout.
+        assert_eq!(inside_edges(&bordered(100, 0, 0)), 0..100);
+        // A window translucent all the way across joins on all of it.
+        assert_eq!(inside_edges(&bordered(100, 100, 0)), 0..100);
     }
 
     /// When, in milliseconds after the step, the frame is taken from samples arriving at those

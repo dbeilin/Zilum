@@ -116,7 +116,8 @@ pub fn grab_screens(monitors: &[HMONITOR]) -> Result<Vec<ID3D11Texture2D>> {
         .collect()
 }
 
-fn screen_item(monitor: HMONITOR) -> Result<GraphicsCaptureItem> {
+/// The capture item for the screen `monitor`.
+pub fn screen_item(monitor: HMONITOR) -> Result<GraphicsCaptureItem> {
     // SAFETY: An interop call on a live activation factory, with a handle Windows validates.
     unsafe {
         factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?.CreateForMonitor(monitor)
@@ -187,8 +188,9 @@ impl Drop for Grab {
     }
 }
 
-/// A screen's capture that keeps running, for a recording or a scrolling run. It holds the newest
-/// frame until a newer one comes. Dropping it stops the capture.
+/// A capture that keeps running, of a screen for a recording or a scrolling run, or of a window
+/// for a run after a window click. It holds the newest frame until a newer one comes. Dropping it
+/// stops the capture.
 pub struct Stream {
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
@@ -196,12 +198,11 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Starts capturing `monitor` on this thread's graphics device, the one `pixels::read` uses
-    /// on this thread, at no more than `interval` between frames where Windows can be told so,
-    /// with the pointer in the frames if `pointer`.
-    pub fn start(monitor: HMONITOR, interval: Duration, pointer: bool) -> Result<Stream> {
+    /// Starts capturing `item` on this thread's graphics device, the one `pixels::read` uses on
+    /// this thread, at no more than `interval` between frames where Windows can be told so, with
+    /// the pointer in the frames if `pointer`.
+    pub fn start(item: &GraphicsCaptureItem, interval: Duration, pointer: bool) -> Result<Stream> {
         let graphics = graphics::get()?;
-        let item = screen_item(monitor)?;
         // Two buffers: one held as the newest frame, and one for Windows to put the next in.
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &graphics.winrt_device,
@@ -210,7 +211,7 @@ impl Stream {
             item.Size()?,
         )?;
         let stream = Stream {
-            session: pool.CreateCaptureSession(&item)?,
+            session: pool.CreateCaptureSession(item)?,
             pool,
             newest: None,
         };

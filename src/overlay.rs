@@ -868,7 +868,7 @@ fn capture(release: Release) {
     if let Some(start) = boxed {
         let chosen = match release.taking {
             Taking::Region(selection) => Chosen::Region(selection),
-            Taking::Window(_, window) => Chosen::Window(window),
+            Taking::Window(item, window) => Chosen::Window(window, item),
         };
         start(release.shown_on, chosen, release.previous, release.tray);
         return;

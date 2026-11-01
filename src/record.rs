@@ -414,7 +414,7 @@ impl Armed {
         previous: Option<HWND>,
         tray: HWND,
     ) -> Result<Option<Armed>> {
-        let (bounds, work, area) = boxed::place(screen, chosen)?;
+        let (bounds, work, area) = boxed::place(screen, &chosen)?;
         let Some(area) = area else {
             return Ok(None);
         };
