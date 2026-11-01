@@ -1,6 +1,7 @@
-//! The Notice: a small pill Zilum draws at the bottom centre of a screen, such as "Copied text",
-//! or beside the pointer after a pick, with a chip of the picked colour, that fades on its own. It
-//! never takes the keyboard and is never in a capture.
+//! The Notice: a small pill Zilum draws at the bottom centre of a screen, such as "Saved", or
+//! beside the pointer after a pick, with a chip of the picked colour, that fades on its own. After
+//! a Copy text it is a card with the start of the text copied under "Copied text". It never takes
+//! the keyboard and is never in a capture.
 
 use std::cell::RefCell;
 
@@ -56,9 +57,21 @@ const BESIDE: f32 = 16.0;
 const CHIP_RADIUS: f32 = 3.0;
 const CHIP_GAP: f32 = 8.0;
 
-/// How long a Notice stays before it fades, how long the fade takes, and each step of it.
+/// A Copy text card's measurements in logical pixels: above and below its content, between its
+/// two parts, the widest its excerpt is and the radius of its corners. And how many lines of the
+/// text copied it shows.
+const CARD_PADDING: f32 = 10.0;
+const CARD_GAP: f32 = 2.0;
+const EXCERPT_WIDTH: f32 = 320.0;
+const CARD_RADIUS: f32 = 8.0;
+const EXCERPT_LINES: usize = 3;
+
+/// How long a Notice stays before it fades, how long the fade takes, and each step of it. A Copy
+/// text card stays longer, to be read, and fades slowly.
 const STAY_MS: u32 = 2000;
 const FADE_MS: u32 = 150;
+const CARD_STAY_MS: u32 = 3500;
+const CARD_FADE_MS: u32 = 700;
 const FADE_STEP_MS: u32 = 15;
 
 /// The Notice's one timer: its stay, then each step of its fade.
@@ -77,6 +90,8 @@ struct Notice {
     visual: IDCompositionVisual3,
     /// The tick count its fade started at, once it is fading.
     fading_since: Option<u32>,
+    /// How long the fade of the Notice showing takes.
+    fade_ms: u32,
 }
 
 pub fn register(instance: HINSTANCE) -> Result<()> {
@@ -104,10 +119,21 @@ struct Pick {
     colour: u32,
 }
 
+/// What a Notice shows besides its text, which also says where it goes.
+#[derive(Clone, Copy)]
+enum Kind<'a> {
+    /// Its text alone, at the bottom centre of its screen.
+    Plain,
+    /// A pick's, beside its pointer with a chip of its colour.
+    Picked(Pick),
+    /// Copy text's, a card at the bottom centre with the start of the text copied under its text.
+    Copied(&'a str),
+}
+
 /// Shows a Notice reading `text` at the bottom centre of `screen`, in place of one still showing.
 /// A Notice that cannot be shown is left out: what it says has already happened.
 pub fn show(text: &str, screen: HMONITOR) {
-    show_on(text, screen, None);
+    show_on(text, screen, Kind::Plain);
 }
 
 /// Shows a Notice reading `text` just below and to the right of `pointer`, on the screen, with a
@@ -115,19 +141,24 @@ pub fn show(text: &str, screen: HMONITOR) {
 pub fn show_picked(text: &str, pointer: POINT, colour: u32) {
     // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
     let screen = unsafe { MonitorFromPoint(pointer, MONITOR_DEFAULTTONEAREST) };
-    show_on(text, screen, Some(Pick { pointer, colour }));
+    show_on(text, screen, Kind::Picked(Pick { pointer, colour }));
 }
 
-/// Shows a Notice reading `text` on `screen`, beside the pointer for a pick and at the bottom
-/// centre otherwise, in place of one still showing.
-fn show_on(text: &str, screen: HMONITOR, pick: Option<Pick>) {
+/// Shows a card reading `text` at the bottom centre of `screen` with the first lines of `copied`
+/// under it, in place of a Notice still showing.
+pub fn show_copied(text: &str, copied: &str, screen: HMONITOR) {
+    show_on(text, screen, Kind::Copied(copied));
+}
+
+/// Shows a Notice reading `text` on `screen`, as `kind` says, in place of one still showing.
+fn show_on(text: &str, screen: HMONITOR, kind: Kind) {
     NOTICE.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_none() {
             *slot = Notice::new().ok();
         }
         if let Some(notice) = slot.as_mut()
-            && notice.show(text, screen, pick).is_err()
+            && notice.show(text, screen, kind).is_err()
         {
             notice.hide();
         }
@@ -185,13 +216,13 @@ impl Notice {
                 _target: target,
                 visual: visual.cast()?,
                 fading_since: None,
+                fade_ms: FADE_MS,
             })
         }
     }
 
-    /// Draws `text` and shows it at the bottom centre of `screen`, or for a pick beside its
-    /// pointer with a chip of its colour, opaque, for its whole stay.
-    fn show(&mut self, text: &str, screen: HMONITOR, pick: Option<Pick>) -> Result<()> {
+    /// Draws `text` and shows it on `screen` as `kind` says, opaque, for its whole stay.
+    fn show(&mut self, text: &str, screen: HMONITOR, kind: Kind) -> Result<()> {
         // SAFETY: Win32 and COM calls on live handles, interfaces and locals.
         unsafe {
             let (mut dpi, mut _dpi_y) = (96, 96);
@@ -202,16 +233,30 @@ impl Notice {
                 ..Default::default()
             };
             GetMonitorInfoW(screen, &mut info).ok()?;
-            let layout = bar::Text::new(scale)?.label(text)?;
+            let px = |logical: f32| (logical * scale).round();
+            let writer = bar::Text::new(scale)?;
+            let layout = writer.label(text)?;
             let size = bar::size(&layout)?;
-            let at = match pick {
-                Some(pick) => beside(
+            let excerpt = match kind {
+                Kind::Copied(copied) => {
+                    Some(writer.excerpt(copied, px(EXCERPT_WIDTH), EXCERPT_LINES)?)
+                }
+                _ => None,
+            };
+            let at = match (kind, &excerpt) {
+                (Kind::Picked(pick), _) => beside(
                     pick.pointer,
                     info.rcWork,
                     chip_width(size.Y, scale) + size.X,
                     scale,
                 ),
-                None => place(info.rcWork, size.X, scale),
+                (_, Some((excerpt, excerpt_height))) => place(
+                    info.rcWork,
+                    size.X.max(bar::size(excerpt)?.X),
+                    card_height(size.Y, *excerpt_height, scale),
+                    scale,
+                ),
+                _ => place(info.rcWork, size.X, px(HEIGHT) as i32, scale),
             };
             let (width, height) = (at.right - at.left, at.bottom - at.top);
 
@@ -230,16 +275,29 @@ impl Notice {
             // ClearType needs an opaque target to blend against; grayscale works on anything.
             context.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
             let palette = theme::palette(settings::current().theme);
-            let chip = pick.map(|pick| pick.colour);
-            let drawn = draw(
-                &context,
-                &layout,
-                width as f32,
-                height as f32,
-                &palette,
-                chip,
-                scale,
-            );
+            let drawn = match (kind, &excerpt) {
+                (_, Some((excerpt, _))) => draw_card(
+                    &context,
+                    &layout,
+                    excerpt,
+                    width as f32,
+                    height as f32,
+                    &palette,
+                    scale,
+                ),
+                (kind, None) => draw(
+                    &context,
+                    &layout,
+                    width as f32,
+                    height as f32,
+                    &palette,
+                    match kind {
+                        Kind::Picked(pick) => Some(pick.colour),
+                        _ => None,
+                    },
+                    scale,
+                ),
+            };
             let ended = surface.EndDraw();
             drawn?;
             ended?;
@@ -256,7 +314,12 @@ impl Notice {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             )?;
             self.fading_since = None;
-            if !win32::set_timer(self.hwnd, TIMER, STAY_MS) {
+            let (stay, fade) = match kind {
+                Kind::Copied(_) => (CARD_STAY_MS, CARD_FADE_MS),
+                _ => (STAY_MS, FADE_MS),
+            };
+            self.fade_ms = fade;
+            if !win32::set_timer(self.hwnd, TIMER, stay) {
                 return Err(Error::from_thread());
             }
         }
@@ -278,11 +341,11 @@ impl Notice {
             None => return self.hide(),
         };
         let elapsed = now.wrapping_sub(since);
-        let faded = elapsed >= FADE_MS
+        let faded = elapsed >= self.fade_ms
             // SAFETY: COM calls on live interfaces and pointers to live locals.
             || unsafe {
                 self.visual
-                    .SetOpacity2(1.0 - elapsed as f32 / FADE_MS as f32)
+                    .SetOpacity2(1.0 - elapsed as f32 / self.fade_ms as f32)
                     .and_then(|()| self.composition.Commit())
             }
             .is_err();
@@ -360,6 +423,50 @@ fn draw(
     Ok(())
 }
 
+/// How high a Copy text card is at `scale` whose text is `text_height` and excerpt
+/// `excerpt_height` physical pixels high.
+fn card_height(text_height: f32, excerpt_height: f32, scale: f32) -> i32 {
+    let px = |logical: f32| (logical * scale).round();
+    (2.0 * px(CARD_PADDING) + text_height.ceil() + px(CARD_GAP) + excerpt_height.ceil()) as i32
+}
+
+/// Draws a Copy text card `width` by `height` at `scale`: `text` at its top left and `excerpt`,
+/// in the quieter tone, under it. Only between `BeginDraw` and `EndDraw`.
+fn draw_card(
+    context: &ID2D1DeviceContext,
+    text: &IDWriteTextLayout,
+    excerpt: &IDWriteTextLayout,
+    width: f32,
+    height: f32,
+    palette: &Palette,
+    scale: f32,
+) -> Result<()> {
+    let px = |logical: f32| (logical * scale).round();
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
+    let brush = |rgb| unsafe { context.CreateSolidColorBrush(&color(rgb), None) };
+    let (ink, quiet) = (brush(palette.text)?, brush(palette.secondary)?);
+    draw_pill(context, width, height, px(CARD_RADIUS), palette)?;
+    let left = px(PADDING);
+    let top = px(CARD_PADDING);
+    let below = top + bar::size(text)?.Y.ceil() + px(CARD_GAP);
+    // SAFETY: Direct2D calls on live interfaces and pointers to live locals.
+    unsafe {
+        context.DrawTextLayout(
+            Vector2 { X: left, Y: top },
+            text,
+            &ink,
+            D2D1_DRAW_TEXT_OPTIONS_NONE,
+        );
+        context.DrawTextLayout(
+            Vector2 { X: left, Y: below },
+            excerpt,
+            &quiet,
+            D2D1_DRAW_TEXT_OPTIONS_NONE,
+        );
+    }
+    Ok(())
+}
+
 /// Clears a surface `width` by `height` and draws a Notice's pill over the whole of it, in the
 /// bar's colour inside a hairline, its corners rounded by `radius` physical pixels: half its
 /// height for fully round ends. Only between `BeginDraw` and `EndDraw`.
@@ -418,16 +525,16 @@ fn width(content_width: f32, scale: f32) -> i32 {
     content_width.ceil() as i32 + 2 * (PADDING * scale).round() as i32
 }
 
-/// Where a Notice whose content is `content_width` physical pixels wide goes on a screen whose work
-/// area is `work`, at `scale`: centred, just above the work area's bottom edge.
-fn place(work: RECT, content_width: f32, scale: f32) -> RECT {
+/// Where a Notice `height` physical pixels high whose content is `content_width` wide goes on a
+/// screen whose work area is `work`, at `scale`: centred, just above the work area's bottom edge.
+fn place(work: RECT, content_width: f32, height: i32, scale: f32) -> RECT {
     let px = |logical: f32| (logical * scale).round() as i32;
     let width = width(content_width, scale);
     let left = (work.left + work.right - width).div_euclid(2);
     let bottom = work.bottom - px(ABOVE);
     RECT {
         left,
-        top: bottom - px(HEIGHT),
+        top: bottom - height,
         right: left + width,
         bottom,
     }
@@ -471,7 +578,7 @@ mod tests {
     fn a_notice_sits_centred_just_above_the_work_area_bottom() {
         // Text 70.4 wide: 71, and 16 either side.
         assert_eq!(
-            place(rect(0, 0, 1920, 1040), 70.4, 1.0),
+            place(rect(0, 0, 1920, 1040), 70.4, 32, 1.0),
             rect(908, 984, 1011, 1016)
         );
     }
@@ -480,7 +587,7 @@ mod tests {
     fn its_measurements_scale_with_the_screen() {
         // A 150% screen left of the primary, its taskbar 40 high.
         assert_eq!(
-            place(rect(-2560, 0, 0, 1400), 100.0, 1.5),
+            place(rect(-2560, 0, 0, 1400), 100.0, 48, 1.5),
             rect(-1354, 1316, -1206, 1364)
         );
     }

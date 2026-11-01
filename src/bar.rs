@@ -16,7 +16,8 @@ use windows::{
         DirectWrite::{
             DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_WEIGHT, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL,
-            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_NO_WRAP,
+            DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_LINE_METRICS, DWRITE_TEXT_METRICS,
+            DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP,
             DWriteCreateFactory, IDWriteFactory, IDWriteFont, IDWriteFontCollection,
             IDWriteTextFormat, IDWriteTextLayout,
         },
@@ -188,6 +189,36 @@ impl Text {
         unsafe {
             self.writer
                 .CreateTextLayout(&text, &self.tip, width, f32::MAX)
+        }
+    }
+
+    /// `text` as `message` lays it out, cut to its first `lines` lines, the last ending in an
+    /// ellipsis where any is left out, with the height those lines take.
+    pub fn excerpt(
+        &self,
+        text: &str,
+        width: f32,
+        lines: usize,
+    ) -> Result<(IDWriteTextLayout, f32)> {
+        let layout = self.message(text, width)?;
+        // SAFETY: DirectWrite calls on live interfaces and pointers to live locals.
+        unsafe {
+            let mut count = 0;
+            // Asked with no room, it only says how many lines there are.
+            let _ = layout.GetLineMetrics(None, &mut count);
+            let mut metrics = vec![DWRITE_LINE_METRICS::default(); count as usize];
+            layout.GetLineMetrics(Some(&mut metrics), &mut count)?;
+            let height = metrics.iter().take(lines).map(|line| line.height).sum();
+            if metrics.len() > lines {
+                layout.SetMaxHeight(height)?;
+                let trimming = DWRITE_TRIMMING {
+                    granularity: DWRITE_TRIMMING_GRANULARITY_CHARACTER,
+                    ..Default::default()
+                };
+                let ellipsis = self.writer.CreateEllipsisTrimmingSign(&self.tip)?;
+                layout.SetTrimming(&trimming, &ellipsis)?;
+            }
+            Ok((layout, height))
         }
     }
 

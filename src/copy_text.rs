@@ -3,7 +3,10 @@
 
 use std::{
     cell::Cell,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
 use windows::{
@@ -31,6 +34,9 @@ pub const WM_NO_TEXT: u32 = WM_APP + 3;
 /// its text would replace the later one's, and its Notice too.
 static LATEST: AtomicU32 = AtomicU32::new(0);
 
+/// The text the latest reading put on the clipboard, which its Notice shows the start of.
+static COPIED: Mutex<String> = Mutex::new(String::new());
+
 thread_local! {
     /// The screen the latest Copy text was chosen on, which its Notice shows on. Only the UI
     /// thread touches it.
@@ -51,7 +57,12 @@ pub fn start(image: Image, screen: HMONITOR, tray: HWND) {
             return;
         }
         match text {
-            Some(text) => clipboard::copy_text(text, tray, tray, WM_TEXT_COPIED),
+            Some(text) => {
+                if let Ok(mut copied) = COPIED.lock() {
+                    copied.clone_from(&text);
+                }
+                clipboard::copy_text(text, tray, tray, WM_TEXT_COPIED);
+            }
             None => {
                 win32::post(tray, WM_NO_TEXT, WPARAM(0), LPARAM(0));
             }
@@ -59,16 +70,23 @@ pub fn start(image: Image, screen: HMONITOR, tray: HWND) {
     });
 }
 
-/// Shows the Notice for the tray window's `message` with `wparam`, one of `start`'s. Nothing when
-/// the text could not be copied: the clipboard has notified that.
+/// Shows the Notice for the tray window's `message` with `wparam`, one of `start`'s: the start of
+/// the text copied under "Copied text", its lines run together so the line breaks of the screen
+/// waste none of the card's room, or "No text found". Nothing when the text could not be copied:
+/// the clipboard has notified that.
 pub fn finished(message: u32, wparam: WPARAM) {
-    let text = match message {
-        WM_TEXT_COPIED if wparam.0 != 0 => "Copied text",
-        WM_NO_TEXT => "No text found",
-        _ => return,
-    };
-    if let Some(screen) = SCREEN.get() {
-        notice::show(text, screen);
+    let Some(screen) = SCREEN.get() else { return };
+    match message {
+        WM_TEXT_COPIED if wparam.0 != 0 => match COPIED.lock() {
+            Ok(copied) => notice::show_copied(
+                "Copied text",
+                &copied.split_whitespace().collect::<Vec<_>>().join(" "),
+                screen,
+            ),
+            Err(_) => notice::show("Copied text", screen),
+        },
+        WM_NO_TEXT => notice::show("No text found", screen),
+        _ => {}
     }
 }
 
