@@ -1,0 +1,32 @@
+# Version updates wait out a cooldown, so a hijacked release is caught before
+# it reaches a PR. Security updates skip the cooldown and open at once.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      crates:
+        patterns: ['*']
+
+  # A new action version gives the exe nothing, so it waits longer.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ['*']
+
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
