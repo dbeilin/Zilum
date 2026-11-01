@@ -33,6 +33,7 @@ mod settings_layout;
 mod settings_window;
 mod slide;
 mod startup;
+mod stitch;
 mod style;
 mod theme;
 mod timed;
@@ -100,6 +101,7 @@ use windows::{
 
 use crate::{
     hotkey::{Hotkey, Mode, Refusal, in_use},
+    image::Image,
     selection::Selection,
 };
 
@@ -351,7 +353,16 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == scrolling::TIMER => {
-            scrolling::grab();
+            scrolling::begin();
+            LRESULT(0)
+        }
+        scrolling::WM_GROWN => {
+            scrolling::grown(wparam.0);
+            LRESULT(0)
+        }
+        scrolling::WM_SCROLLED => {
+            // SAFETY: This is a WM_SCROLLED message, and its capture is taken only here.
+            unsafe { scrolling::finished(lparam) };
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == MENU_FADE_TIMER => {
@@ -723,10 +734,7 @@ pub fn deliver(
                         .around(image, bounds, shown_on),
                     None => image,
                 };
-                let image = Arc::new(image);
-                // Without an editor the capture is still copied.
-                let editor = editor::open(image.clone(), tray, previous).ok();
-                clipboard::copy(image, tray, editor);
+                open_capture(image, tray, previous);
             }
             Purpose::CopyText => {
                 // No editor opens to hand the front back, so it goes back from here.
@@ -739,6 +747,15 @@ pub fn deliver(
         },
         None => notify(tray, "Capture failed"),
     }
+}
+
+/// Puts `image` on the clipboard and in an editor, whose keyboard goes back to `previous` when it
+/// leaves untouched. Failures are notified from the tray window `tray`.
+pub fn open_capture(image: Image, tray: HWND, previous: Option<HWND>) {
+    let image = Arc::new(image);
+    // Without an editor the capture is still copied.
+    let editor = editor::open(image.clone(), tray, previous).ok();
+    clipboard::copy(image, tray, editor);
 }
 
 /// Drops hotkey messages while the tray menu is modal, so no overlay opens under it.

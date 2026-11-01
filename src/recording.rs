@@ -300,7 +300,7 @@ fn capture(
     jobs: &Sender<Job>,
     busy: &AtomicBool,
 ) -> Option<u32> {
-    let Ok(mut stream) = Stream::start(screen, TICK) else {
+    let Ok(mut stream) = Stream::start(screen, TICK, true) else {
         return None;
     };
     let mut timing = Timing::default();

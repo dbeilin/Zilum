@@ -187,8 +187,8 @@ impl Drop for Grab {
     }
 }
 
-/// A screen's capture that keeps running, with the pointer in it, for a recording. It holds the
-/// newest frame until a newer one comes. Dropping it stops the capture.
+/// A screen's capture that keeps running, for a recording or a scrolling run. It holds the newest
+/// frame until a newer one comes. Dropping it stops the capture.
 pub struct Stream {
     pool: Direct3D11CaptureFramePool,
     session: GraphicsCaptureSession,
@@ -197,8 +197,9 @@ pub struct Stream {
 
 impl Stream {
     /// Starts capturing `monitor` on this thread's graphics device, the one `pixels::read` uses
-    /// on this thread, at no more than `interval` between frames where Windows can be told so.
-    pub fn start(monitor: HMONITOR, interval: Duration) -> Result<Stream> {
+    /// on this thread, at no more than `interval` between frames where Windows can be told so,
+    /// with the pointer in the frames if `pointer`.
+    pub fn start(monitor: HMONITOR, interval: Duration, pointer: bool) -> Result<Stream> {
         let graphics = graphics::get()?;
         let item = screen_item(monitor)?;
         // Two buffers: one held as the newest frame, and one for Windows to put the next in.
@@ -213,8 +214,12 @@ impl Stream {
             pool,
             newest: None,
         };
-        // The pointer is part of a recording, as it is not of a still.
-        stream.session.SetIsCursorCaptureEnabled(true)?;
+        // The pointer is part of a recording, as it is not of a still or a scrolling capture.
+        stream.session.SetIsCursorCaptureEnabled(pointer)?;
+        // Some builds ignore the setter, so read it back where the pointer must be left out.
+        if !pointer && stream.session.IsCursorCaptureEnabled()? {
+            return Err(Error::from(E_FAIL));
+        }
         let _ = stream.session.SetIsBorderRequired(false);
         // Only on recent builds; elsewhere frames come as often as the screen changes.
         let _ = stream.session.SetMinUpdateInterval(TimeSpan {
