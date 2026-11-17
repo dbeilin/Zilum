@@ -200,6 +200,13 @@ pub fn valid(window: HWND) -> Option<HWND> {
     (!window.is_invalid()).then_some(window)
 }
 
+/// Whether `window` is still open: not destroyed, and not hidden, as an app that closes to the
+/// tray hides its window. Any thread may ask.
+pub fn is_open(window: HWND) -> bool {
+    // SAFETY: Takes only a handle, which may be stale.
+    unsafe { IsWindow(Some(window)).as_bool() && IsWindowVisible(window).as_bool() }
+}
+
 /// The window's visible frame in physical pixels, without the invisible resize borders Windows
 /// keeps around it. A window capture is this size.
 pub fn frame(window: HWND) -> Result<RECT> {

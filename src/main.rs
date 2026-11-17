@@ -88,8 +88,8 @@ use windows::{
                 SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetForegroundWindow, SetWindowsHookExW,
                 SystemParametersInfoW, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
                 TranslateMessage, UnhookWindowsHookEx, WH_MSGFILTER, WINDOW_EX_STYLE, WM_APP,
-                WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_ENDSESSION, WM_HOTKEY, WM_NULL,
-                WM_QUERYENDSESSION, WM_QUIT, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSW,
+                WM_CLOSE, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_ENDSESSION, WM_HOTKEY,
+                WM_NULL, WM_QUERYENDSESSION, WM_QUIT, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSW,
                 WS_OVERLAPPED,
             },
         },
@@ -359,7 +359,7 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         scrolling::WM_GROWN => {
-            scrolling::grown(wparam.0);
+            scrolling::grown(wparam.0, lparam.0 as usize);
             LRESULT(0)
         }
         hands::WM_UNHOOK => {
@@ -368,7 +368,7 @@ unsafe extern "system" fn window_proc(
         }
         scrolling::WM_SCROLLED => {
             // SAFETY: This is a WM_SCROLLED message, and its capture is taken only here.
-            unsafe { scrolling::finished(lparam) };
+            unsafe { scrolling::finished(wparam.0, lparam) };
             LRESULT(0)
         }
         WM_TIMER if wparam.0 == MENU_FADE_TIMER => {
@@ -406,9 +406,18 @@ unsafe extern "system" fn window_proc(
             win32::destroy(hwnd);
             LRESULT(0)
         }
-        // The user has left the screen they set up for a timed capture.
-        WM_WTSSESSION_CHANGE if timed::dropped_by(wparam.0 as u32) => {
-            win32::kill_timer(hwnd, timed::TIMER);
+        // The user has left the screen they set up for a timed capture, or that a run scrolls.
+        WM_WTSSESSION_CHANGE => {
+            let code = wparam.0 as u32;
+            if timed::dropped_by(code) {
+                win32::kill_timer(hwnd, timed::TIMER);
+            }
+            scrolling::happened(scrolling::Happening::Session(code));
+            LRESULT(0)
+        }
+        // Every top-level window is told, this hidden one among them.
+        WM_DISPLAYCHANGE => {
+            scrolling::screens_changed();
             LRESULT(0)
         }
         // Not dropped here: another app may still refuse, and the session carry on. Signing out
@@ -421,8 +430,10 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         // Quit, a newer copy taking over, signing out and shutting down all end here. A timed
-        // capture waiting goes with the window's timers.
+        // capture waiting goes with the window's timers; a run is dropped, its thread with the
+        // process.
         WM_DESTROY => {
+            scrolling::happened(scrolling::Happening::Leaving);
             record::end();
             // SAFETY: Takes a live handle. One that was never registered is refused, harmlessly.
             let _ = unsafe { WTSUnRegisterSessionNotification(hwnd) };
@@ -607,9 +618,10 @@ fn open_overlay(hwnd: HWND, previous: Option<HWND>, purpose: Purpose) {
 }
 
 /// Captures the whole current screen with no overlay. `previous` is as for `open_overlay`. Does
-/// nothing while an overlay is open.
+/// nothing while an overlay is open or a run is up: Zilum is mid-capture, and a timed capture
+/// whose time comes then is dropped.
 fn capture_screen(hwnd: HWND, previous: Option<HWND>) {
-    if overlay::is_open() {
+    if overlay::is_open() || scrolling::running() {
         return;
     }
     let grabbed = capture::current_screen().and_then(|(monitor, screen)| {
@@ -836,17 +848,26 @@ fn show_menu(hwnd: HWND, x: i32, y: i32, previous: HWND) {
             id => {
                 if let Some(ms) = timed::ms_for(id) {
                     if win32::set_timer(hwnd, timed::TIMER, ms) {
-                        // So a lock or a switch away drops it. Registered at each choice, not at
-                        // start, since a start at sign-in can come before Windows' session
-                        // service is ready to take it; released first, so it is registered once.
-                        let _ = WTSUnRegisterSessionNotification(hwnd);
-                        let _ = WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION);
+                        // So a lock or a switch away drops it.
+                        hear_sessions(hwnd);
                     } else {
                         notify(hwnd, "Capture failed");
                     }
                 }
             }
         }
+    }
+}
+
+/// Has the tray window `tray` told of locks, sign-outs and switches away from the session, which
+/// drop a timed capture waiting and a run. Registered at each use, not at start, since a start at
+/// sign-in can come before Windows' session service is ready to take it; released first, so it is
+/// registered once.
+pub fn hear_sessions(tray: HWND) {
+    // SAFETY: Takes a live handle and a flag.
+    unsafe {
+        let _ = WTSUnRegisterSessionNotification(tray);
+        let _ = WTSRegisterSessionNotification(tray, NOTIFY_FOR_THIS_SESSION);
     }
 }
 

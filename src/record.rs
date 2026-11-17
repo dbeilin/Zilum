@@ -13,7 +13,7 @@ use windows::{
         Graphics::{
             Direct2D::{Common::D2D_RECT_F, D2D1_ELLIPSE, ID2D1DeviceContext},
             DirectWrite::IDWriteTextLayout,
-            Gdi::{GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromRect},
+            Gdi::HMONITOR,
         },
         System::{
             RemoteDesktop::{
@@ -306,7 +306,7 @@ fn stop_recording() {
 /// where that screen was. A screen still there may have a new handle, which the box takes.
 fn displays_changed() {
     let mut lost = false;
-    with_armed(|armed| match screen_at(armed.bounds) {
+    with_armed(|armed| match boxed::screen_at(armed.bounds) {
         Some(screen) => armed.screen = screen,
         None => lost = true,
     });
@@ -316,22 +316,6 @@ fn displays_changed() {
             State::Armed => disarm(),
             State::Recording => stop_recording(),
         }
-    }
-}
-
-/// The screen with exactly `bounds` on the desktop, if there is one.
-fn screen_at(bounds: RECT) -> Option<HMONITOR> {
-    let mut info = MONITORINFO {
-        cbSize: size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
-    unsafe {
-        let screen = MonitorFromRect(&bounds, MONITOR_DEFAULTTONULL);
-        (!screen.is_invalid()
-            && GetMonitorInfoW(screen, &mut info).as_bool()
-            && info.rcMonitor == bounds)
-            .then_some(screen)
     }
 }
 

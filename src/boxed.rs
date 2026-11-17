@@ -19,7 +19,8 @@ use windows::{
             Dxgi::Common::{DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM},
             Gdi::{
                 COLOR_WINDOW, CombineRgn, CreateRectRgn, CreateSolidBrush, DeleteObject,
-                GetMonitorInfoW, HBRUSH, HMONITOR, MONITORINFO, RGN_DIFF, RGN_ERROR, SetWindowRgn,
+                GetMonitorInfoW, HBRUSH, HMONITOR, MONITOR_DEFAULTTONULL, MONITORINFO,
+                MonitorFromRect, RGN_DIFF, RGN_ERROR, SetWindowRgn,
             },
         },
         System::LibraryLoader::GetModuleHandleW,
@@ -129,6 +130,23 @@ pub fn place(screen: HMONITOR, chosen: &Chosen) -> Result<(RECT, RECT, Option<Se
         Chosen::Window(hwnd, _) => within(window::frame(*hwnd)?, bounds),
     };
     Ok((bounds, info.rcWork, area))
+}
+
+/// The screen with exactly `bounds` on the desktop, if there is one: none once the screen a box
+/// was put on has been unplugged, turned off or moved.
+pub fn screen_at(bounds: RECT) -> Option<HMONITOR> {
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: Win32 calls taking handles, integers and pointers to live locals.
+    unsafe {
+        let screen = MonitorFromRect(&bounds, MONITOR_DEFAULTTONULL);
+        (!screen.is_invalid()
+            && GetMonitorInfoW(screen, &mut info).as_bool()
+            && info.rcMonitor == bounds)
+            .then_some(screen)
+    }
 }
 
 /// `area` of the screen at `bounds`, on the desktop.

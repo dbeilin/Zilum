@@ -8,7 +8,7 @@
 //! any moment with what is joined so far.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ops::Range,
     sync::{
         Arc,
@@ -48,7 +48,7 @@ use crate::{
     settings,
     stitch::{Frame, Stitch, Verdict},
     theme::Palette,
-    win32, window,
+    timed, win32, window,
 };
 
 /// How far inside the area's right edge the pointer parks, in physical pixels: about the middle
@@ -58,10 +58,11 @@ const PARK_INSET: i32 = 8;
 const STOP: &str = "Move the mouse or press a key to stop";
 
 /// Posted to the tray window each time a frame joins, with the height stitched so far in
-/// `wparam`. Clear of the other messages the tray window takes.
+/// `wparam` and the run's number in `lparam`. Clear of the other messages the tray window takes.
 pub const WM_GROWN: u32 = WM_APP + 5;
-/// Posted to the tray window once the run has ended. `lparam` is a boxed `Option<Image>`, the
-/// capture, or none if not even the first frame could be taken, which [`finished`] takes.
+/// Posted to the tray window once the run has ended, with the run's number in `wparam`. `lparam`
+/// is a boxed `Option<Image>`, the capture, or none if not even the first frame could be taken,
+/// which [`finished`] takes.
 pub const WM_SCROLLED: u32 = WM_APP + 6;
 
 /// The tray window's timer the run waits on, so its first frame is taken once the overlay has
@@ -95,11 +96,16 @@ const FADE: Duration = Duration::from_millis(300);
 thread_local! {
     /// The run while one is up. There is never a second.
     static RUN: RefCell<Option<Run>> = const { RefCell::new(None) };
+    /// The last run's number. A run dropped leaves its thread to finish on its own, and what the
+    /// thread posts carries its run's number, so it never reaches a run started since.
+    static SERIAL: Cell<usize> = const { Cell::new(0) };
 }
 
 /// A run: its area, and the box and pill around it. Its steps and frames are on a thread of
 /// their own.
 struct Run {
+    /// Its number, which what its thread posts carries.
+    serial: usize,
     /// The tray window, which the run's thread reports to.
     tray: HWND,
     /// The area: one screen, and a rectangle in its physical pixels.
@@ -156,6 +162,8 @@ pub fn start(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWN
         Ok(Some(run)) => {
             let (bounds, area, stopped) = (run.bounds, run.area, run.stopped.clone());
             RUN.set(Some(run));
+            // So a lock or a switch away drops it.
+            crate::hear_sessions(tray);
             let (x, y) = park(area, bounds);
             let mut parked = POINT { x, y };
             // SAFETY: Takes only integers, and a pointer to a live local.
@@ -178,20 +186,23 @@ pub fn start(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWN
 /// Begins the run's steps and frames on their own thread, now the overlay has gone. The thread
 /// posts `WM_GROWN` as the capture grows and `WM_SCROLLED` when the run ends.
 pub fn begin() {
-    let Some((tray, screen, area, source, item, scale, stopped)) = RUN.with_borrow_mut(|run| {
-        run.as_mut().map(|run| {
-            let item = run.item.take();
-            (
-                run.tray,
-                run.screen,
-                run.area,
-                run.source,
-                item,
-                run.pill.scale,
-                run.stopped.clone(),
-            )
+    let Some((serial, tray, screen, area, source, item, scale, stopped)) =
+        RUN.with_borrow_mut(|run| {
+            run.as_mut().map(|run| {
+                let item = run.item.take();
+                (
+                    run.serial,
+                    run.tray,
+                    run.screen,
+                    run.area,
+                    run.source,
+                    item,
+                    run.pill.scale,
+                    run.stopped.clone(),
+                )
+            })
         })
-    }) else {
+    else {
         return;
     };
     win32::kill_timer(tray, TIMER);
@@ -206,11 +217,20 @@ pub fn begin() {
                         run.placed = Some((frame, shown_on));
                     }
                 });
-                Some((item, window::whole(frame), shown_on.0 as isize))
+                Some((
+                    item,
+                    window::whole(frame),
+                    shown_on.0 as isize,
+                    window.0 as isize,
+                ))
             }
             _ => {
+                // A window closed since the click drops the run, as one closed during it does.
+                let closed = !window::is_open(window);
                 end();
-                crate::notify(tray, "Capture failed");
+                if !closed {
+                    crate::notify(tray, "Capture failed");
+                }
                 return;
             }
         },
@@ -222,18 +242,29 @@ pub fn begin() {
     let started = std::thread::Builder::new().spawn(move || {
         graphics::init_apartment();
         let tray = HWND(to as _);
-        let window = window.map(|(item, part, shown_on)| (item, part, HMONITOR(shown_on as _)));
+        let window = window.map(|(item, part, shown_on, hwnd)| Window {
+            item,
+            part,
+            shown_on: HMONITOR(shown_on as _),
+            hwnd: HWND(hwnd as _),
+        });
         let capture = Box::into_raw(Box::new(scroll(
             HMONITOR(screen_id as _),
             area,
             window,
             scale,
-            tray,
+            Report { tray, serial },
             stopped,
         )));
         // SAFETY: Handles and integers only; if the post fails, the box in lparam is reclaimed.
-        let posted =
-            unsafe { PostMessageW(Some(tray), WM_SCROLLED, WPARAM(0), LPARAM(capture as isize)) };
+        let posted = unsafe {
+            PostMessageW(
+                Some(tray),
+                WM_SCROLLED,
+                WPARAM(serial),
+                LPARAM(capture as isize),
+            )
+        };
         if posted.is_err() {
             // SAFETY: The post failed, so nothing took `capture`, which Box::into_raw made.
             drop(unsafe { Box::from_raw(capture) });
@@ -245,38 +276,41 @@ pub fn begin() {
     }
 }
 
-/// The pill reads `height`, the height stitched so far.
-pub fn grown(height: usize) {
+/// The pill of run `serial` reads `height`, the height stitched so far.
+pub fn grown(height: usize, serial: usize) {
     RUN.with_borrow_mut(|run| {
-        if let Some(run) = run {
+        if let Some(run) = run.as_mut().filter(|run| run.serial == serial) {
             let _ = run.pill.read(height);
         }
     });
 }
 
-/// Ends the run with the capture a `WM_SCROLLED` message carries in `lparam`: on the clipboard
-/// and in an editor, or "Capture failed" if there is none. The box and the pill go as the editor
-/// opens.
+/// Ends run `serial`, a `WM_SCROLLED` message's `wparam`, with the capture the message carries in
+/// `lparam`: on the clipboard and in an editor, or "Capture failed" if there is none, or nothing
+/// at all if the run's screen or window is gone. The box and the pill go as the editor opens. A
+/// run dropped before its thread came back has nothing left to end.
 ///
 /// # Safety
 ///
 /// `lparam` is a `WM_SCROLLED` message's, and is taken only once.
-pub unsafe fn finished(lparam: LPARAM) {
+pub unsafe fn finished(serial: usize, lparam: LPARAM) {
     // SAFETY: `begin` made it with Box::into_raw, and the caller takes it once.
     let capture = *unsafe { Box::from_raw(lparam.0 as *mut Option<Image>) };
-    // Before the editor opens: every input on the system waits for the hooks.
-    hands::end();
-    let Some((tray, previous, placed)) =
-        RUN.with_borrow(|run| run.as_ref().map(|run| (run.tray, run.previous, run.placed)))
-    else {
+    let Some((tray, previous, placed, lost)) = RUN.with_borrow(|run| {
+        run.as_ref()
+            .filter(|run| run.serial == serial)
+            .map(|run| (run.tray, run.previous, run.placed, run.lost()))
+    }) else {
         return;
     };
+    // Before the editor opens: every input on the system waits for the hooks.
+    hands::end();
     // A window that draws nothing comes back with every pixel transparent, as Capture window
     // finds it.
     let capture = capture.filter(|image| placed.is_none() || !image.is_blank());
-    match capture {
+    match ending(capture, lost) {
         // The parked pointer is in no frame: the run's frames leave it out.
-        Some(image) => {
+        Ending::Opens(image) => {
             // A window's gets its background, as a Window capture does.
             let image = match placed {
                 Some((frame, shown_on)) => settings::current()
@@ -286,16 +320,80 @@ pub unsafe fn finished(lparam: LPARAM) {
             };
             crate::open_capture(image, tray, previous);
         }
-        None => crate::notify(tray, "Capture failed"),
+        Ending::Fails => crate::notify(tray, "Capture failed"),
+        Ending::Dropped => {}
     }
     end();
 }
 
-/// Closes the box and the pill, leaving nothing on the screen.
+/// How a run whose thread came back ends.
+#[derive(Debug, PartialEq, Eq)]
+enum Ending<T> {
+    /// Its capture opens, as any capture does.
+    Opens(T),
+    /// "Capture failed", as the other modes say it.
+    Fails,
+    /// Nothing is shown or copied.
+    Dropped,
+}
+
+/// How a run ends that came back with `capture`, none if not even its first frame could be taken,
+/// with what it was of `lost` by then, if anything: its screen or the window clicked. Dropped if
+/// that is gone, however much it joined; and otherwise its capture opens, whatever stopped it, or
+/// it fails.
+fn ending<T>(capture: Option<T>, lost: Option<Happening>) -> Ending<T> {
+    match capture {
+        _ if lost.is_some_and(drops) => Ending::Dropped,
+        Some(capture) => Ending::Opens(capture),
+        None => Ending::Fails,
+    }
+}
+
+/// Something around a run, other than its own steps and the user's hands, that may drop it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Happening {
+    /// The session changed, as a `WM_WTSSESSION_CHANGE` wparam says.
+    Session(u32),
+    /// The area's screen is no longer where it was: unplugged, turned off or moved.
+    ScreenGone,
+    /// The window a window click chose has closed.
+    WindowClosed,
+    /// Zilum is leaving: Quit, a newer copy taking over, signing out or shutting down.
+    Leaving,
+}
+
+/// Whether `happening` drops a run: the user has left the screen they set up, as a waiting timed
+/// capture is dropped, or what the run was of is gone, or Zilum is.
+fn drops(happening: Happening) -> bool {
+    match happening {
+        Happening::Session(code) => timed::dropped_by(code),
+        Happening::ScreenGone | Happening::WindowClosed | Happening::Leaving => true,
+    }
+}
+
+/// Drops the run, if one is up and `happening` drops it: the box and the pill go, its thread
+/// stops stepping, and nothing is shown or copied.
+pub fn happened(happening: Happening) {
+    if running() && drops(happening) {
+        end();
+    }
+}
+
+/// Drops the run if its screen is no longer where it was, now that the screens have changed.
+pub fn screens_changed() {
+    if RUN.with_borrow(|run| run.as_ref().is_some_and(Run::screen_gone)) {
+        happened(Happening::ScreenGone);
+    }
+}
+
+/// Closes the box and the pill, leaving nothing on the screen, and stops the run's thread
+/// stepping; whatever it delivers after is not this run's.
 fn end() {
     hands::end();
     // Taken out first: destroying the windows sends them messages.
     if let Some(run) = RUN.take() {
+        run.stopped.store(true, Ordering::Relaxed);
+        win32::kill_timer(run.tray, TIMER);
         win32::destroy(run.pill.window.hwnd);
         if let Some(line) = run.line {
             win32::destroy(line);
@@ -325,6 +423,23 @@ impl Source {
 }
 
 impl Run {
+    /// What of the run is gone, if anything: its screen is no longer where it was, or the window
+    /// clicked has closed.
+    fn lost(&self) -> Option<Happening> {
+        if self.screen_gone() {
+            Some(Happening::ScreenGone)
+        } else if matches!(self.source, Source::Window(window) if !window::is_open(window)) {
+            Some(Happening::WindowClosed)
+        } else {
+            None
+        }
+    }
+
+    /// Whether the run's screen is no longer where it was: unplugged, turned off or moved.
+    fn screen_gone(&self) -> bool {
+        boxed::screen_at(self.bounds).is_none()
+    }
+
     /// The box around `chosen` on `screen` and its pill, shown, or none if nothing of `chosen` is
     /// on `screen`.
     fn new(
@@ -354,7 +469,10 @@ impl Run {
                 return Err(error);
             }
         };
+        let serial = SERIAL.get().wrapping_add(1);
+        SERIAL.set(serial);
         Ok(Some(Run {
+            serial,
             tray,
             screen,
             area,
@@ -458,23 +576,23 @@ impl Pill {
 
 /// Scrolls the content under the parked pointer and joins the frames, taken after each step, into
 /// one capture: down to the end, back to the start, up to the top. The frames are `area` of
-/// `screen`, the box's, or after a window click `window`: its capture item, the part of its frames
-/// that shows it, and the screen whose white their colours are relative to. A step is one for
-/// `area`'s height on a screen at `scale`. Posts the height to `tray` as it grows. None if not
-/// even the first frame could be taken. A frame that cannot be taken is a join lost, and once
-/// `stopped` is set, the frame being waited for is left and what joined is the capture.
+/// `screen`, the box's, or after a window click `window`'s. A step is one for `area`'s height on a
+/// screen at `scale`. Reports the height to `report` as it grows. None if not
+/// even the first frame could be taken. A frame that cannot be taken, the window's included once
+/// it has closed, is a join lost, and once `stopped` is set, the frame being waited for is left
+/// and what joined is the capture.
 fn scroll(
     screen: HMONITOR,
     area: Selection,
-    window: Option<(GraphicsCaptureItem, Selection, HMONITOR)>,
+    window: Option<Window>,
     scale: f32,
-    tray: HWND,
+    report: Report,
     stopped: Arc<AtomicBool>,
 ) -> Option<Image> {
     // SAFETY: Takes nothing.
     let taken = unsafe { GetLocalTime() };
     let mut frames = Frames::start(screen, area, window, stopped)?;
-    let mut joined = Joined::new(frames.first()?, tray);
+    let mut joined = Joined::new(frames.first()?, report);
     let step = notches(area.height, scale);
     // The steps down that moved the content, which the way back to the start retraces.
     let mut down = 0;
@@ -534,17 +652,17 @@ struct Joined {
     /// The rows kept of each frame that joined, the start frame first: the first row's place in
     /// the frame, and the rows' pixels. The capture is made of them once the bands are known.
     kept: Vec<(usize, Vec<u8>)>,
-    /// The tray window, told the height as it grows.
-    tray: HWND,
+    /// Where the height goes as it grows.
+    report: Report,
 }
 
 impl Joined {
     /// The capture of the run's `first` frame, which grows down from it and then up, telling
     /// `tray` its height as it does.
-    fn new(first: Image, tray: HWND) -> Joined {
+    fn new(first: Image, report: Report) -> Joined {
         // A window's first frame is the whole window, taller than the box when it hangs off the
         // screen.
-        win32::post(tray, WM_GROWN, WPARAM(first.height as usize), LPARAM(0));
+        report.grown(first.height as usize);
         let columns = inside_edges(&first);
         Joined {
             stitch: Stitch::new(Frame::from_columns(
@@ -556,7 +674,7 @@ impl Joined {
             columns,
             scale: first.scale,
             kept: vec![(0, first.pixels)],
-            tray,
+            report,
         }
     }
 
@@ -589,7 +707,7 @@ impl Joined {
             rows.start,
             pixels[rows.start * row..rows.end * row].to_vec(),
         ));
-        win32::post(self.tray, WM_GROWN, WPARAM(self.stitch.height()), LPARAM(0));
+        self.report.grown(self.stitch.height());
         match verdict {
             Verdict::Full(_) => Next::End,
             _ => Next::More,
@@ -613,6 +731,26 @@ impl Joined {
             );
         }
         Image::new(self.width, height as u32, pixels, taken, self.scale)
+    }
+}
+
+/// Where a run's thread reports: the tray window, and the run's number, which every report
+/// carries.
+#[derive(Clone, Copy)]
+struct Report {
+    tray: HWND,
+    serial: usize,
+}
+
+impl Report {
+    /// Tells the tray window the run's capture is `height` tall so far.
+    fn grown(self, height: usize) {
+        win32::post(
+            self.tray,
+            WM_GROWN,
+            WPARAM(height),
+            LPARAM(self.serial as isize),
+        );
     }
 }
 
@@ -649,6 +787,18 @@ fn wheel(notches: i32) {
     let _ = unsafe { SendInput(&[input], size_of::<INPUT>() as i32) };
 }
 
+/// The window a window click chose, as a run's thread takes its frames from it.
+struct Window {
+    /// Its capture item.
+    item: GraphicsCaptureItem,
+    /// The part of its frames that shows it.
+    part: Selection,
+    /// The screen whose white the frames' colours are relative to.
+    shown_on: HMONITOR,
+    /// The window itself, whose frames end once it has closed.
+    hwnd: HWND,
+}
+
 /// A run's frames, without the pointer: the area as the screen shows it, or the window's own
 /// picture.
 struct Frames {
@@ -657,8 +807,9 @@ struct Frames {
     shown_on: HMONITOR,
     /// The part of each frame read: the area of the screen, or the window's visible frame.
     part: Selection,
-    /// Whether the frames are a window's, whose translucent edges are kept.
-    window: bool,
+    /// The window the frames are of, whose translucent edges are kept, and whose closing ends
+    /// them; none for the screen's.
+    window: Option<HWND>,
     /// The part's pixels as last sampled.
     last: Vec<u8>,
     /// Set once the user's hands have ended the run.
@@ -671,19 +822,18 @@ impl Frames {
     fn start(
         screen: HMONITOR,
         area: Selection,
-        window: Option<(GraphicsCaptureItem, Selection, HMONITOR)>,
+        window: Option<Window>,
         stopped: Arc<AtomicBool>,
     ) -> Option<Frames> {
-        let is_window = window.is_some();
-        let (item, part, shown_on) = match window {
-            Some(window) => window,
-            None => (capture::screen_item(screen).ok()?, area, screen),
+        let (item, part, shown_on, hwnd) = match window {
+            Some(window) => (window.item, window.part, window.shown_on, Some(window.hwnd)),
+            None => (capture::screen_item(screen).ok()?, area, screen, None),
         };
         Some(Frames {
             stream: Stream::start(&item, Duration::from_millis(1), false).ok()?,
             shown_on,
             part,
-            window: is_window,
+            window: hwnd,
             last: Vec::new(),
             stopped,
         })
@@ -744,8 +894,12 @@ impl Frames {
     }
 
     /// The part's pixels if a frame has come since the last sample, or none if not. None at all
-    /// if the frames can no longer be captured, or no longer hold the part.
+    /// if the frames can no longer be captured, or no longer hold the part, or are of a window
+    /// that has closed.
     fn sample(&mut self) -> Option<Option<Image>> {
+        if self.window.is_some_and(|window| !window::is_open(window)) {
+            return None;
+        }
         if !self.stream.refresh().ok()? {
             return Some(None);
         }
@@ -757,7 +911,7 @@ impl Frames {
             self.shown_on,
             SYSTEMTIME::default(),
             self.part,
-            self.window,
+            self.window.is_some(),
         )
         .ok()?;
         (image.width == self.part.width as u32 && image.height == self.part.height as u32)
@@ -1096,6 +1250,53 @@ mod tests {
                 .sum::<usize>(),
             105
         );
+    }
+
+    #[test]
+    fn locking_signing_out_and_switching_away_drop_a_run() {
+        // From WtsApi32.h: console and remote disconnect 2 and 4, logoff 6, lock 7.
+        for code in [2, 4, 6, 7] {
+            assert!(drops(Happening::Session(code)), "session change {code}");
+        }
+    }
+
+    #[test]
+    fn coming_back_to_the_session_leaves_a_run() {
+        // Console and remote connect 1 and 3, logon 5, unlock 8, remote control 9.
+        for code in [1, 3, 5, 8, 9] {
+            assert!(!drops(Happening::Session(code)), "session change {code}");
+        }
+    }
+
+    #[test]
+    fn quit_and_a_newer_copy_drop_a_run() {
+        assert!(drops(Happening::Leaving));
+    }
+
+    #[test]
+    fn a_run_that_came_back_with_a_capture_opens_it() {
+        // A run that lost a later frame came back with what joined, its first frame at least.
+        assert_eq!(ending(Some("capture"), None), Ending::Opens("capture"));
+    }
+
+    #[test]
+    fn a_run_that_could_not_take_even_its_first_frame_fails() {
+        assert_eq!(ending(None::<()>, None), Ending::Fails);
+    }
+
+    #[test]
+    fn a_run_whose_screen_is_gone_is_dropped_whatever_it_came_back_with() {
+        let gone = Some(Happening::ScreenGone);
+        assert_eq!(ending(Some("capture"), gone), Ending::Dropped);
+        assert_eq!(ending(None::<()>, gone), Ending::Dropped);
+    }
+
+    #[test]
+    fn a_run_whose_window_closed_is_dropped_whatever_it_came_back_with() {
+        let closed = Some(Happening::WindowClosed);
+        assert_eq!(ending(Some("capture"), closed), Ending::Dropped);
+        // Closed before the first frame: no "Capture failed".
+        assert_eq!(ending(None::<()>, closed), Ending::Dropped);
     }
 
     #[test]
