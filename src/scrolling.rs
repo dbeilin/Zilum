@@ -4,18 +4,23 @@
 //! under the pointer with the wheel, down to its end, back to where it started and up to its top,
 //! takes a frame of the area from the screen after each step once the picture has settled, and
 //! joins the frames into one tall capture, delivered as an ordinary one. The steps and frames are
-//! on a thread of their own, so the message thread is never held up.
+//! on a thread of their own, so the message thread is never held up. The user's hands end it at
+//! any moment with what is joined so far.
 
 use std::{
     cell::RefCell,
     ops::Range,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use windows::{
     Graphics::Capture::GraphicsCaptureItem,
     Win32::{
-        Foundation::{HWND, LPARAM, RECT, SYSTEMTIME, WPARAM},
+        Foundation::{HWND, LPARAM, POINT, RECT, SYSTEMTIME, WPARAM},
         Graphics::{
             Direct2D::ID2D1DeviceContext, DirectWrite::IDWriteTextLayout, Dwm::DwmFlush,
             Gdi::HMONITOR,
@@ -26,7 +31,7 @@ use windows::{
             Input::KeyboardAndMouse::{
                 INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
             },
-            WindowsAndMessaging::{PostMessageW, SetCursorPos, WHEEL_DELTA, WM_APP},
+            WindowsAndMessaging::{GetCursorPos, PostMessageW, SetCursorPos, WHEEL_DELTA, WM_APP},
         },
     },
     core::{Result, w},
@@ -36,7 +41,7 @@ use crate::{
     bar::{self, Paint, Tone},
     boxed::{self, Chosen, HEIGHT, Layout, PillWindow},
     capture::{self, Stream},
-    graphics,
+    graphics, hands,
     image::Image,
     notice, pixels,
     selection::Selection,
@@ -115,6 +120,9 @@ struct Run {
     /// The window that draws the box's line, unless all of the line is off the screen.
     line: Option<HWND>,
     pill: Pill,
+    /// Set once the user's hands have ended the run, which its thread then ends with what is
+    /// joined.
+    stopped: Arc<AtomicBool>,
 }
 
 /// The run's pill: the height stitched so far, and under it how to stop. It has no button.
@@ -146,11 +154,17 @@ pub fn start(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWN
     }
     match Run::new(screen, chosen, previous, tray) {
         Ok(Some(run)) => {
-            let (bounds, area) = (run.bounds, run.area);
+            let (bounds, area, stopped) = (run.bounds, run.area, run.stopped.clone());
             RUN.set(Some(run));
             let (x, y) = park(area, bounds);
-            // SAFETY: Takes only integers.
-            let _ = unsafe { SetCursorPos(x, y) };
+            let mut parked = POINT { x, y };
+            // SAFETY: Takes only integers, and a pointer to a live local.
+            unsafe {
+                let _ = SetCursorPos(x, y);
+                // Where it is, if Windows kept it from there.
+                let _ = GetCursorPos(&mut parked);
+            }
+            hands::watch(parked, stopped, tray);
             if !win32::set_timer(tray, TIMER, GRAB_MS) {
                 end();
                 crate::notify(tray, "Capture failed");
@@ -164,7 +178,7 @@ pub fn start(screen: HMONITOR, chosen: Chosen, previous: Option<HWND>, tray: HWN
 /// Begins the run's steps and frames on their own thread, now the overlay has gone. The thread
 /// posts `WM_GROWN` as the capture grows and `WM_SCROLLED` when the run ends.
 pub fn begin() {
-    let Some((tray, screen, area, source, item, scale)) = RUN.with_borrow_mut(|run| {
+    let Some((tray, screen, area, source, item, scale, stopped)) = RUN.with_borrow_mut(|run| {
         run.as_mut().map(|run| {
             let item = run.item.take();
             (
@@ -174,6 +188,7 @@ pub fn begin() {
                 run.source,
                 item,
                 run.pill.scale,
+                run.stopped.clone(),
             )
         })
     }) else {
@@ -214,6 +229,7 @@ pub fn begin() {
             window,
             scale,
             tray,
+            stopped,
         )));
         // SAFETY: Handles and integers only; if the post fails, the box in lparam is reclaimed.
         let posted =
@@ -248,6 +264,8 @@ pub fn grown(height: usize) {
 pub unsafe fn finished(lparam: LPARAM) {
     // SAFETY: `begin` made it with Box::into_raw, and the caller takes it once.
     let capture = *unsafe { Box::from_raw(lparam.0 as *mut Option<Image>) };
+    // Before the editor opens: every input on the system waits for the hooks.
+    hands::end();
     let Some((tray, previous, placed)) =
         RUN.with_borrow(|run| run.as_ref().map(|run| (run.tray, run.previous, run.placed)))
     else {
@@ -275,6 +293,7 @@ pub unsafe fn finished(lparam: LPARAM) {
 
 /// Closes the box and the pill, leaving nothing on the screen.
 fn end() {
+    hands::end();
     // Taken out first: destroying the windows sends them messages.
     if let Some(run) = RUN.take() {
         win32::destroy(run.pill.window.hwnd);
@@ -346,6 +365,7 @@ impl Run {
             previous,
             line,
             pill,
+            stopped: Arc::default(),
         }))
     }
 }
@@ -441,24 +461,25 @@ impl Pill {
 /// `screen`, the box's, or after a window click `window`: its capture item, the part of its frames
 /// that shows it, and the screen whose white their colours are relative to. A step is one for
 /// `area`'s height on a screen at `scale`. Posts the height to `tray` as it grows. None if not
-/// even the first frame could be taken. A frame that cannot be taken is a join lost.
+/// even the first frame could be taken. A frame that cannot be taken is a join lost, and once
+/// `stopped` is set, the frame being waited for is left and what joined is the capture.
 fn scroll(
     screen: HMONITOR,
     area: Selection,
     window: Option<(GraphicsCaptureItem, Selection, HMONITOR)>,
     scale: f32,
     tray: HWND,
+    stopped: Arc<AtomicBool>,
 ) -> Option<Image> {
     // SAFETY: Takes nothing.
     let taken = unsafe { GetLocalTime() };
-    let mut frames = Frames::start(screen, area, window)?;
+    let mut frames = Frames::start(screen, area, window, stopped)?;
     let mut joined = Joined::new(frames.first()?, tray);
     let step = notches(area.height, scale);
     // The steps down that moved the content, which the way back to the start retraces.
     let mut down = 0;
     loop {
-        wheel(-step);
-        let Some(frame) = frames.settled() else {
+        let Some(frame) = frames.step(-step) else {
             return Some(joined.capture(taken));
         };
         match joined.add(&frame) {
@@ -469,8 +490,7 @@ fn scroll(
     }
     let mut back = None;
     for _ in 0..down {
-        wheel(step);
-        back = frames.settled();
+        back = frames.step(step);
         if back.is_none() {
             return Some(joined.capture(taken));
         }
@@ -484,9 +504,7 @@ fn scroll(
     {
         return Some(joined.capture(taken));
     }
-    loop {
-        wheel(step);
-        let Some(frame) = frames.settled() else { break };
+    while let Some(frame) = frames.step(step) {
         if joined.add(&frame) != Next::More {
             break;
         }
@@ -614,7 +632,7 @@ fn inside_edges(first: &Image) -> Range<usize> {
 }
 
 /// Turns the wheel under the pointer by `notches`, up if positive, as a user's hand would, so the
-/// app sees the wheel where the pointer is.
+/// app sees the wheel where the pointer is. Marked as Zilum's, so it does not end the run.
 fn wheel(notches: i32) {
     let input = INPUT {
         r#type: INPUT_MOUSE,
@@ -622,6 +640,7 @@ fn wheel(notches: i32) {
             mi: MOUSEINPUT {
                 mouseData: (notches * WHEEL_DELTA as i32) as u32,
                 dwFlags: MOUSEEVENTF_WHEEL,
+                dwExtraInfo: hands::MARK,
                 ..Default::default()
             },
         },
@@ -642,15 +661,18 @@ struct Frames {
     window: bool,
     /// The part's pixels as last sampled.
     last: Vec<u8>,
+    /// Set once the user's hands have ended the run.
+    stopped: Arc<AtomicBool>,
 }
 
 impl Frames {
     /// The frames coming from now on: of `window` after a window click, as `scroll` has it, and
-    /// otherwise of `area` of `screen`. None if they cannot be captured.
+    /// otherwise of `area` of `screen`, until `stopped` is set. None if they cannot be captured.
     fn start(
         screen: HMONITOR,
         area: Selection,
         window: Option<(GraphicsCaptureItem, Selection, HMONITOR)>,
+        stopped: Arc<AtomicBool>,
     ) -> Option<Frames> {
         let is_window = window.is_some();
         let (item, part, shown_on) = match window {
@@ -663,10 +685,12 @@ impl Frames {
             part,
             window: is_window,
             last: Vec::new(),
+            stopped,
         })
     }
 
-    /// The first frame, once the title bar's fade is over and a frame has come.
+    /// The first frame, once the title bar's fade is over and a frame has come; at once if the
+    /// run has been stopped, since a capture of one frame has no bands.
     fn first(&mut self) -> Option<Image> {
         let begun = Instant::now();
         let mut latest = None;
@@ -674,7 +698,7 @@ impl Frames {
             if let Some(image) = self.sample()? {
                 latest = Some(image);
             }
-            if begun.elapsed() >= FADE
+            if (begun.elapsed() >= FADE || self.stopped())
                 && let Some(image) = latest.take()
             {
                 self.last = image.pixels.clone();
@@ -687,12 +711,20 @@ impl Frames {
         }
     }
 
-    /// The frame after a step, once the picture has settled. None if it cannot be taken.
-    fn settled(&mut self) -> Option<Vec<u8>> {
+    /// The frame after a step of `notches`, once the picture has settled. None if it cannot be
+    /// taken, or the run has been stopped, in which case the step is not taken either.
+    fn step(&mut self, notches: i32) -> Option<Vec<u8>> {
+        if self.stopped() {
+            return None;
+        }
+        wheel(notches);
         let stepped = Instant::now();
         let mut settle = Settle::default();
         loop {
             tick();
+            if self.stopped() {
+                return None;
+            }
             let differs = match self.sample()? {
                 Some(image) if image.pixels != self.last => {
                     self.last = image.pixels;
@@ -704,6 +736,11 @@ impl Frames {
                 return Some(self.last.clone());
             }
         }
+    }
+
+    /// Whether the user's hands have ended the run.
+    fn stopped(&self) -> bool {
+        self.stopped.load(Ordering::Relaxed)
     }
 
     /// The part's pixels if a frame has come since the last sample, or none if not. None at all
@@ -1070,20 +1107,25 @@ mod tests {
             crate::copy_text::WM_NO_TEXT,
             crate::instance::WM_VERSION,
         ];
-        assert_ne!(WM_GROWN, WM_SCROLLED);
-        for message in [WM_GROWN, WM_SCROLLED] {
+        let ours = [WM_GROWN, WM_SCROLLED, hands::WM_UNHOOK];
+        for (at, message) in ours.into_iter().enumerate() {
+            assert!(!ours[at + 1..].contains(&message));
             assert!(!others.contains(&message));
         }
     }
 
     #[test]
-    fn the_timer_is_clear_of_the_tray_windows_other_timers() {
-        assert_ne!(TIMER, crate::MENU_FADE_TIMER);
-        assert_ne!(TIMER, crate::timed::TIMER);
-        assert!(
-            crate::hotkey::Mode::ALL
-                .into_iter()
-                .all(|mode| crate::hotkey_id(mode) != TIMER)
-        );
+    fn the_timers_are_clear_of_the_tray_windows_other_timers() {
+        let ours = [TIMER, hands::TIMER];
+        assert_ne!(TIMER, hands::TIMER);
+        for timer in ours {
+            assert_ne!(timer, crate::MENU_FADE_TIMER);
+            assert_ne!(timer, crate::timed::TIMER);
+            assert!(
+                crate::hotkey::Mode::ALL
+                    .into_iter()
+                    .all(|mode| crate::hotkey_id(mode) != timer)
+            );
+        }
     }
 }

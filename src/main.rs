@@ -14,6 +14,7 @@ mod entry;
 mod flyout;
 mod frame;
 mod graphics;
+mod hands;
 mod history;
 mod hotkey;
 mod image;
@@ -349,12 +350,20 @@ unsafe extern "system" fn window_proc(
             capture_screen(hwnd, window::valid(window::before_taskbar()));
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == hands::TIMER => {
+            hands::unwatch();
+            LRESULT(0)
+        }
         WM_TIMER if wparam.0 == scrolling::TIMER => {
             scrolling::begin();
             LRESULT(0)
         }
         scrolling::WM_GROWN => {
             scrolling::grown(wparam.0);
+            LRESULT(0)
+        }
+        hands::WM_UNHOOK => {
+            hands::tidy();
             LRESULT(0)
         }
         scrolling::WM_SCROLLED => {
