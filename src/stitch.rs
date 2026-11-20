@@ -9,8 +9,9 @@ use std::ops::Range;
 pub const LIMIT: usize = 16384;
 
 /// How many blocks each row is cut into across. A part of the frame that changes in place, a
-/// scrollbar's thumb, a blinking caret, a floating button, then spoils a row only where its own
-/// blocks tell something, at its edges, and elsewhere the row still lines up.
+/// blinking caret, a floating button, then spoils a row only where its own blocks tell something,
+/// at its edges, and elsewhere the row still lines up. The last block across, where a scrollbar
+/// is, is never compared: see [`compared`].
 const BLOCKS: usize = 16;
 /// At most one row in this many compared may differ at a join: a thumb's edges, a caret, a fixed
 /// strip the content scrolls under.
@@ -104,21 +105,28 @@ impl Frame {
         self.rows.len()
     }
 
-    /// Whether row `y` is the same as `other`'s, as a band's rows are in every frame. The last
-    /// block across is left out: it holds the scrollbar, whose thumb moves beside a header that
-    /// does not.
+    /// Whether row `y` is the same as `other`'s, as a band's rows are in every frame.
     fn same(&self, other: &Frame, y: usize) -> bool {
-        let (row, theirs) = (&self.rows[y], &other.rows[y]);
-        let compared = if row.len() > 1 { row.len() - 1 } else { 1 };
-        row.iter()
-            .zip(theirs)
-            .take(compared)
+        compared(&self.rows[y])
+            .iter()
+            .zip(compared(&other.rows[y]))
             .all(|(block, their)| block.signature == their.signature)
     }
 
     /// Its rows between `bands`.
     fn between(&self, bands: Bands) -> &[Vec<Block>] {
         &self.rows[bands.top..self.height() - bands.bottom]
+    }
+}
+
+/// The blocks of `row` that are compared: all but the last, which holds the scrollbar, unless the
+/// row is one block. A scrollbar neither scrolls nor stays still: its thumb moves beside a header
+/// that does not, and its arrows stay put beside a page that does, and its thumb's rounded ends
+/// and its arrows tell something over many rows, enough to sink a join with little overlap.
+fn compared(row: &[Block]) -> &[Block] {
+    match row {
+        [rest @ .., _] if !rest.is_empty() => rest,
+        _ => row,
     }
 }
 
@@ -180,12 +188,22 @@ pub struct Stitch {
     /// The bands of the frames joined, none until a frame has joined the start frame.
     bands: Option<Bands>,
     joins: Vec<Join>,
+    /// The tallest it grows, in rows.
+    limit: usize,
 }
 
 impl Stitch {
     /// A stitch of the run's first frame, `start`, going down.
+    #[cfg(test)]
     pub fn new(start: Frame) -> Stitch {
+        Stitch::within(start, LIMIT)
+    }
+
+    /// A stitch of the run's first frame, `start`, going down, that grows no taller than `limit`
+    /// rows: [`LIMIT`] less the rows the capture holds outside the stitch.
+    pub fn within(start: Frame, limit: usize) -> Stitch {
         Stitch {
+            limit,
             height: start.height(),
             start,
             last: None,
@@ -245,7 +263,7 @@ impl Stitch {
             None => return Verdict::Lost,
         };
         let height = frame.height();
-        let taken = moved.min(LIMIT - self.height);
+        let taken = moved.min(self.limit - self.height);
         self.height += taken;
         self.bands = Some(bands);
         self.joins.push(Join {
@@ -259,7 +277,7 @@ impl Stitch {
         } else {
             height - bands.bottom - moved..height
         };
-        if self.height == LIMIT {
+        if self.height == self.limit {
             Verdict::Full(rows)
         } else {
             Verdict::Joined(rows)
@@ -354,7 +372,10 @@ fn offset(last: &[Vec<Block>], new: &[Vec<Block>], up: bool) -> Option<usize> {
         for at in 0..overlap {
             let mut telling = false;
             let mut same = true;
-            for (old, now) in last[at_row(at + moved)].iter().zip(&new[at_row(at)]) {
+            for (old, now) in compared(&last[at_row(at + moved)])
+                .iter()
+                .zip(compared(&new[at_row(at)]))
+            {
                 if old.plain && now.plain {
                     continue;
                 }
@@ -533,6 +554,18 @@ mod tests {
                 rows: 216..600
             })
         );
+    }
+
+    #[test]
+    fn a_stitch_given_less_room_stops_short_of_the_limit() {
+        // Room kept for 16 rows that are added to the capture outside the stitch.
+        let rows = |from: u64| (from..from + 1000).collect::<Vec<u64>>();
+        let mut stitch = Stitch::within(Frame::of(&rows(0)), LIMIT - 16);
+        let mut step = 1;
+        while let Verdict::Joined(_) = stitch.add(Frame::of(&rows(step * 600))) {
+            step += 1;
+        }
+        assert_eq!(stitch.height(), LIMIT - 16);
     }
 
     /// The rows of a capture made of `kept`, the frames that joined, start frame first, each
@@ -767,6 +800,38 @@ mod tests {
         assert_eq!(
             stitch.add(Frame::from_pixels(&list(60, 30..90), 64)),
             Verdict::Joined(90..120)
+        );
+    }
+
+    /// The pixels of `page` with a scrollbar's arrows drawn in its right 4 columns, over its top
+    /// 8 rows and its bottom 8, every row of them unlike the one above, as a window's own
+    /// scrollbar draws them, still while the page scrolls past.
+    fn with_arrows(mut pixels: Vec<u8>, height: usize) -> Vec<u8> {
+        let width = 64;
+        for y in (0..8).chain(height - 8..height) {
+            for x in width - 4..width {
+                let at = (y * width + x) * 4;
+                pixels[at..at + 3].fill((20 + y * 9 % 200) as u8);
+            }
+        }
+        pixels
+    }
+
+    #[test]
+    fn a_window_joins_with_little_overlap_whatever_its_scrollbars_arrows_do() {
+        // A window click's frames hold the window's own scrollbar, arrows and all; moved 90 of
+        // 120 rows, the 30 that overlap line up but for the arrows at either end, which differ
+        // in 16 of them.
+        let mut stitch = Stitch::new(Frame::from_pixels(
+            &with_arrows(page(0, 120, 8..20), 120),
+            64,
+        ));
+        assert_eq!(
+            stitch.add(Frame::from_pixels(
+                &with_arrows(page(90, 120, 20..32), 120),
+                64
+            )),
+            Verdict::Joined(30..120)
         );
     }
 

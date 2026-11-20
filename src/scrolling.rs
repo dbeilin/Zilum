@@ -46,7 +46,7 @@ use crate::{
     notice, pixels,
     selection::Selection,
     settings,
-    stitch::{Frame, Stitch, Verdict},
+    stitch::{Frame, LIMIT, Stitch, Verdict},
     theme::Palette,
     timed, win32, window,
 };
@@ -648,10 +648,20 @@ struct Joined {
     width: u32,
     /// The columns the frames join on: inside a window's translucent edges.
     columns: Range<usize>,
+    /// The rows at the top and bottom of a window's frames that its rounded corners cut into,
+    /// which the stitch never sees.
+    rounded: Rounded,
     scale: f32,
     /// The rows kept of each frame that joined, the start frame first: the first row's place in
-    /// the frame, and the rows' pixels. The capture is made of them once the bands are known.
+    /// the frame less its rounded rows, and the rows' pixels. The capture is made of them once
+    /// the bands are known.
     kept: Vec<(usize, Vec<u8>)>,
+    /// The rounded rows at the top of the frame farthest up, and at the bottom of the frame
+    /// farthest down, which the capture starts and ends with, as the window does.
+    top: Vec<u8>,
+    bottom: Vec<u8>,
+    /// Whether the frames are going up.
+    up: bool,
     /// Where the height goes as it grows.
     report: Report,
 }
@@ -664,16 +674,23 @@ impl Joined {
         // screen.
         report.grown(first.height as usize);
         let columns = inside_edges(&first);
+        let rounded = Rounded::of(&first, &columns);
+        let row = first.width as usize * 4;
+        let (top, rest) = first.pixels.split_at(rounded.top * row);
+        let (inner, bottom) = rest.split_at(rest.len() - rounded.bottom * row);
         Joined {
-            stitch: Stitch::new(Frame::from_columns(
-                &first.pixels,
-                first.width as usize,
-                columns.clone(),
-            )),
+            stitch: Stitch::within(
+                Frame::from_columns(inner, first.width as usize, columns.clone()),
+                LIMIT - rounded.top - rounded.bottom,
+            ),
             width: first.width,
             columns,
+            rounded,
             scale: first.scale,
-            kept: vec![(0, first.pixels)],
+            kept: vec![(0, inner.to_vec())],
+            top: top.to_vec(),
+            bottom: bottom.to_vec(),
+            up: false,
             report,
         }
     }
@@ -690,8 +707,19 @@ impl Joined {
         self.take(verdict, pixels)
     }
 
+    /// The frame the stitch compares of the area's `pixels`: its rows but the rounded ones.
     fn frame(&self, pixels: &[u8]) -> Frame {
-        Frame::from_columns(pixels, self.width as usize, self.columns.clone())
+        Frame::from_columns(
+            self.inner(pixels),
+            self.width as usize,
+            self.columns.clone(),
+        )
+    }
+
+    /// The rows of `pixels` but the rounded ones.
+    fn inner<'a>(&self, pixels: &'a [u8]) -> &'a [u8] {
+        let row = self.width as usize * 4;
+        &pixels[self.rounded.top * row..pixels.len() - self.rounded.bottom * row]
     }
 
     /// Keeps the rows of `pixels` that `verdict` says the capture may take, and tells the tray
@@ -703,11 +731,16 @@ impl Joined {
             Verdict::Unmoved => return Next::Unmoved,
             Verdict::Lost => return Next::End,
         };
-        self.kept.push((
-            rows.start,
-            pixels[rows.start * row..rows.end * row].to_vec(),
-        ));
-        self.report.grown(self.stitch.height());
+        let inner = self.inner(pixels);
+        self.kept
+            .push((rows.start, inner[rows.start * row..rows.end * row].to_vec()));
+        // The frame farthest that way so far: its rounded rows are where the window's are.
+        if self.up {
+            self.top = pixels[..self.rounded.top * row].to_vec();
+        } else {
+            self.bottom = pixels[pixels.len() - self.rounded.bottom * row..].to_vec();
+        }
+        self.report.grown(self.height());
         match verdict {
             Verdict::Full(_) => Next::End,
             _ => Next::More,
@@ -717,19 +750,28 @@ impl Joined {
     /// Goes up from the start frame from now on.
     fn turn(&mut self) {
         self.stitch.turn();
+        self.up = true;
     }
 
-    /// The capture, taken at `taken`: each band once, and the rows between them joined.
+    /// How tall the capture is so far, its rounded rows included.
+    fn height(&self) -> usize {
+        self.rounded.top + self.stitch.height() + self.rounded.bottom
+    }
+
+    /// The capture, taken at `taken`: each band once, and the rows between them joined, between
+    /// a window's rounded rows.
     fn capture(self, taken: SYSTEMTIME) -> Image {
-        let height = self.stitch.height();
+        let height = self.height();
         let row = self.width as usize * 4;
         let mut pixels = Vec::with_capacity(height * row);
+        pixels.extend_from_slice(&self.top);
         for piece in self.stitch.pieces() {
             let (from, kept) = &self.kept[piece.frame];
             pixels.extend_from_slice(
                 &kept[(piece.rows.start - from) * row..(piece.rows.end - from) * row],
             );
         }
+        pixels.extend_from_slice(&self.bottom);
         Image::new(self.width, height as u32, pixels, taken, self.scale)
     }
 }
@@ -767,6 +809,40 @@ fn inside_edges(first: &Image) -> Range<usize> {
     };
     let right = (0..width).rev().find(opaque).map_or(width, |x| x + 1);
     left..right
+}
+
+/// The rows at the top and the bottom of a window's frames that its rounded corners cut into.
+/// The corners show what is behind the window, which differs from frame to frame and would both
+/// spoil a join and leave a notch at each one; the capture holds them once, at its top and bottom,
+/// where the window has them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Rounded {
+    top: usize,
+    bottom: usize,
+}
+
+impl Rounded {
+    /// None, as the screen's frames have.
+    const NONE: Rounded = Rounded { top: 0, bottom: 0 };
+
+    /// The rounded rows of `first`, a run's first frame, whose `columns` are inside its
+    /// translucent edges: those at the top and at the bottom where the first of them is not
+    /// opaque. None if it is not opaque even along the middle row, as a frame translucent
+    /// throughout is not.
+    fn of(first: &Image, columns: &Range<usize>) -> Rounded {
+        let (width, height) = (first.width as usize, first.height as usize);
+        let opaque = |y: &usize| first.pixels[(y * width + columns.start) * 4 + 3] == 255;
+        if !opaque(&(height / 2)) {
+            return Rounded::NONE;
+        }
+        Rounded {
+            top: (0..height / 2).take_while(|y| !opaque(y)).count(),
+            bottom: (height / 2..height)
+                .rev()
+                .take_while(|y| !opaque(y))
+                .count(),
+        }
+    }
 }
 
 /// Turns the wheel under the pointer by `notches`, up if positive, as a user's hand would, so the
@@ -1098,6 +1174,47 @@ mod tests {
             };
         }
         Image::new(width as u32, 3, pixels, SYSTEMTIME::default(), 1.0)
+    }
+
+    /// An image `width` wide and `height` tall, opaque grey, but for its first column, translucent
+    /// as a window's border is, and the first two columns of its top `top` rows and bottom
+    /// `bottom` rows, translucent as a window's rounded corners are.
+    fn cornered(width: usize, height: usize, top: usize, bottom: usize) -> Image {
+        let mut pixels = vec![128; width * height * 4];
+        for (at, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = (at % width, at / width);
+            let corner = x < 2 && (y < top || y >= height - bottom);
+            pixel[3] = if x == 0 || corner { 120 } else { 255 };
+        }
+        Image::new(
+            width as u32,
+            height as u32,
+            pixels,
+            SYSTEMTIME::default(),
+            1.0,
+        )
+    }
+
+    #[test]
+    fn a_windows_rounded_corners_are_the_rows_where_its_edge_is_not_opaque() {
+        let window = cornered(40, 30, 8, 8);
+        assert_eq!(
+            Rounded::of(&window, &inside_edges(&window)),
+            Rounded { top: 8, bottom: 8 }
+        );
+        let window = cornered(40, 30, 3, 0);
+        assert_eq!(
+            Rounded::of(&window, &inside_edges(&window)),
+            Rounded { top: 3, bottom: 0 }
+        );
+    }
+
+    #[test]
+    fn the_screens_frames_and_a_window_translucent_throughout_have_no_rounded_rows() {
+        let screen = bordered(100, 0, 0);
+        assert_eq!(Rounded::of(&screen, &inside_edges(&screen)), Rounded::NONE);
+        let glass = bordered(100, 100, 0);
+        assert_eq!(Rounded::of(&glass, &inside_edges(&glass)), Rounded::NONE);
     }
 
     #[test]
