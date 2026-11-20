@@ -18,8 +18,11 @@ AppId={{4D134D07-969E-4B64-9267-8461C277C777}
 AppName=Zilum
 AppVersion={#AppVersion}
 VersionInfoVersion={#AppVersion}
-; For the person running it, with no administrator: %LOCALAPPDATA%\Programs\Zilum.
+; Inno's own first dialog asks who it is for: me only, the default, with no administrator and
+; into %LOCALAPPDATA%\Programs\Zilum, or all users, with one and into C:\Program Files\Zilum.
+; An upgrade takes the install's own mode and asks nothing (UsePreviousPrivileges, left at yes).
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
 DefaultDirName={autopf}\Zilum
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -54,7 +57,8 @@ SelectTasksLabel2=Select the additional tasks you would like Setup to perform wh
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop icon"; Flags: unchecked
-Name: startwithwindows; Description: "Start with Windows"
+; Start with Windows for everyone is ticket 07's; an all-users install offers only the icon.
+Name: startwithwindows; Description: "Start with Windows"; Check: not IsAdminInstallMode
 
 [Files]
 Source: "{#ReleaseExe}"; DestDir: "{app}"; Flags: ignoreversion
@@ -68,17 +72,18 @@ Name: "{autodesktop}\Zilum"; Filename: "{app}\Zilum.exe"; Tasks: desktopicon; Ch
 ; Start with Windows as the options page left it, for Zilum to make the setting at its next start,
 ; once for this install (src\startup.rs reads these names). Install is new at each first install;
 ; an upgrade writes none of these rows, so Zilum finds the stamp it already took and the setting
-; stays the person's.
-Root: HKCU; Subkey: "Software\Zilum"; ValueType: string; ValueName: "Install"; ValueData: "{code:InstallStamp}"; Flags: uninsdeletekey; Check: not AlreadyInstalled
-Root: HKCU; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWindows"; ValueData: 1; Tasks: startwithwindows; Check: not AlreadyInstalled
-Root: HKCU; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWindows"; ValueData: 0; Tasks: not startwithwindows; Check: not AlreadyInstalled
+; stays the person's. An all-users install writes none of them: they are one person's.
+Root: HKCU; Subkey: "Software\Zilum"; ValueType: string; ValueName: "Install"; ValueData: "{code:InstallStamp}"; Flags: uninsdeletekey; Check: ForMeAtFirstInstall
+Root: HKCU; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWindows"; ValueData: 1; Tasks: startwithwindows; Check: ForMeAtFirstInstall
+Root: HKCU; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWindows"; ValueData: 0; Tasks: not startwithwindows; Check: ForMeAtFirstInstall
 ; The start at sign-in, set or cleared here so the next sign-in is right before Zilum has run. It
 ; is the Run entry Zilum's Settings sets, naming this exe with the sign-in flag.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Zilum"; ValueData: """{app}\Zilum.exe"" --startup"; Tasks: startwithwindows; Check: not AlreadyInstalled
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Zilum"; Flags: deletevalue; Tasks: not startwithwindows; Check: not AlreadyInstalled
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Zilum"; ValueData: """{app}\Zilum.exe"" --startup"; Tasks: startwithwindows; Check: ForMeAtFirstInstall
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Zilum"; Flags: deletevalue; Tasks: not startwithwindows; Check: ForMeAtFirstInstall
 
 [Run]
-Filename: "{app}\Zilum.exe"; Description: "Launch Zilum"; Flags: nowait postinstall
+; As the person at the PC, never as the administrator an all-users install asked for.
+Filename: "{app}\Zilum.exe"; Description: "Launch Zilum"; Flags: nowait postinstall runasoriginaluser
 
 [Code]
 const
@@ -125,10 +130,18 @@ end;
 // Whether Zilum is already installed here, by the install's own entry in Installed apps, whose
 // folder Setup read at its start: a loose or portable exe is not an install. An upgrade, a repair
 // or a going back alike asks nothing and changes none of the first install's choices. Setup reads
-// that folder only while UsePreviousAppDir is left at yes.
+// that folder only while UsePreviousAppDir is left at yes, and from the entry of the mode
+// UsePreviousPrivileges took, the person's or the machine's.
 function AlreadyInstalled: Boolean;
 begin
   Result := WizardForm.PrevAppDir <> '';
+end;
+
+// Whether the install writes the person's own record and sign-in start: a first install for me
+// only, never an upgrade or an all-users install.
+function ForMeAtFirstInstall: Boolean;
+begin
+  Result := not AlreadyInstalled and not IsAdminInstallMode;
 end;
 
 // An upgrade skips the folder and options pages.
