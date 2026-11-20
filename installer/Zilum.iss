@@ -57,8 +57,7 @@ SelectTasksLabel2=Select the additional tasks you would like Setup to perform wh
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop icon"; Flags: unchecked
-; Start with Windows for everyone is ticket 07's; an all-users install offers only the icon.
-Name: startwithwindows; Description: "Start with Windows"; Check: not IsAdminInstallMode
+Name: startwithwindows; Description: "Start with Windows"
 
 [Files]
 Source: "{#ReleaseExe}"; DestDir: "{app}"; Flags: ignoreversion
@@ -80,6 +79,14 @@ Root: HKCU; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWin
 ; is the Run entry Zilum's Settings sets, naming this exe with the sign-in flag.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Zilum"; ValueData: """{app}\Zilum.exe"" --startup"; Tasks: startwithwindows; Check: ForMeAtFirstInstall
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Zilum"; Flags: deletevalue; Tasks: not startwithwindows; Check: ForMeAtFirstInstall
+; An all-users install records its choice for the PC, and each person's Zilum makes it their
+; setting the first time it starts after this install, remembering that in their own key. Ticked,
+; one start at sign-in for everyone, the PC's, which a Zilum whose person has it off leaves at
+; once and silently; that Zilum clears its person's own start, so nobody has two.
+Root: HKLM; Subkey: "Software\Zilum"; ValueType: string; ValueName: "Install"; ValueData: "{code:InstallStamp}"; Flags: uninsdeletekey; Check: ForAllAtFirstInstall
+Root: HKLM; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWindows"; ValueData: 1; Tasks: startwithwindows; Check: ForAllAtFirstInstall
+Root: HKLM; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWindows"; ValueData: 0; Tasks: not startwithwindows; Check: ForAllAtFirstInstall
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Zilum"; ValueData: """{app}\Zilum.exe"" --startup"; Flags: uninsdeletevalue; Tasks: startwithwindows; Check: ForAllAtFirstInstall
 
 [Run]
 ; As the person at the PC, never as the administrator an all-users install asked for.
@@ -144,6 +151,12 @@ begin
   Result := not AlreadyInstalled and not IsAdminInstallMode;
 end;
 
+// Whether the install writes the PC's record and sign-in start: a first install for all users.
+function ForAllAtFirstInstall: Boolean;
+begin
+  Result := not AlreadyInstalled and IsAdminInstallMode;
+end;
+
 // An upgrade skips the folder and options pages.
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
@@ -168,17 +181,28 @@ begin
     PostMessage(WizardForm.NextButton.Handle, BM_CLICK, 0, 0);
 end;
 
-// Runs once Install is clicked, before anything is copied.
-function PrepareToInstall(var NeedsRestart: Boolean): String;
-begin
-  CloseRunningZilum;
-  Result := '';
-end;
-
 const
   // The start at sign-in, as src\startup.rs writes it: the quoted exe, then the sign-in flag.
   RUN_KEY = 'Software\Microsoft\Windows\CurrentVersion\Run';
   RUN_NAME = 'Zilum';
+
+// Runs once Install is clicked, before anything is copied. A first all-users install's choice
+// replaces the person's own start too, whichever exe it names: ticked, the PC's start takes its
+// place, and unticked, it is off for everyone. Other people's own starts go when their Zilum first
+// takes the choice.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  CloseRunningZilum;
+  if ForAllAtFirstInstall then
+    RegDeleteValue(HKCU, RUN_KEY, RUN_NAME);
+  Result := '';
+end;
+
+// Whether the start at sign-in `Command` starts this install's exe.
+function StartsThisInstall(Command: String): Boolean;
+begin
+  Result := Pos(Lowercase(ExpandConstant('"{app}\Zilum.exe"')), Lowercase(Command)) = 1;
+end;
 
 var
   // Whether the person uninstalling ticked Also remove my settings.
@@ -244,7 +268,9 @@ end;
 
 // A running Zilum is closed as at an install, and the sign-in start goes whether the installer or
 // Zilum's Settings wrote it, when it names this install's exe; a Portable Zilum's start is left.
-// The settings go once everything else has.
+// An all-users install's start, the PC's, goes too, so it starts nobody's Zilum; another person's
+// own start names an exe no longer there, and starts nothing. The settings go once everything
+// else has.
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Command: String;
@@ -252,9 +278,11 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     CloseRunningZilum;
-    if RegQueryStringValue(HKCU, RUN_KEY, RUN_NAME, Command)
-      and (Pos(Lowercase(ExpandConstant('"{app}\Zilum.exe"')), Lowercase(Command)) = 1) then
+    if RegQueryStringValue(HKCU, RUN_KEY, RUN_NAME, Command) and StartsThisInstall(Command) then
       RegDeleteValue(HKCU, RUN_KEY, RUN_NAME);
+    if IsAdminInstallMode and RegQueryStringValue(HKLM, RUN_KEY, RUN_NAME, Command)
+      and StartsThisInstall(Command) then
+      RegDeleteValue(HKLM, RUN_KEY, RUN_NAME);
   end
   else if (CurUninstallStep = usPostUninstall) and RemoveSettings then
     DelTree(ExpandConstant('{userappdata}\Zilum'), True, True, True);

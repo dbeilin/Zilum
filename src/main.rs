@@ -182,12 +182,38 @@ fn main() -> Result<()> {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
 
+        // Read once: a hand edit takes effect at the next start. An invalid value stays in the
+        // file until the next choice rewrites it.
+        let (mut settings, invalid) = settings::load();
+        // An installer's Start with Windows becomes the setting, once per install, so Settings
+        // stays the one place that says it. Taken only by the copy that goes on running, below.
+        let choice = startup::installer_choice(settings::portable());
+        let on = choice
+            .as_ref()
+            .map_or(settings.start_with_windows, |choice| choice.on);
+        // The PC's start comes at everyone's sign-in, maybe beside a start of the person's own.
+        // This copy clears that one if it is not to be, whether or not it is the copy that stays,
+        // and leaves before it meets any running copy when the person's setting is off.
+        let at_sign_in = startup::at_sign_in();
+        if at_sign_in {
+            startup::refresh(on, choice.is_some());
+        }
+        if !startup::stays(at_sign_in, on) {
+            return Ok(());
+        }
+
         // A newer copy opened while an older one runs closes it and starts in its place, so
-        // updating is opening the new exe. Any other copy leaves the running one as it is.
+        // updating is opening the new exe. Any other copy leaves the running one as it is,
+        // telling it why unless Windows started this copy at sign-in.
         let single_instance = CreateMutexW(None, true, w!(r"Local\Zilum"))?;
         let took_over = GetLastError() == ERROR_ALREADY_EXISTS;
-        if took_over && !instance::arrive(single_instance) {
+        if took_over && !instance::arrive(single_instance, at_sign_in) {
             return Ok(());
+        }
+        if let Some(choice) = &choice {
+            settings.start_with_windows = choice.on;
+            settings::store(settings.clone());
+            startup::remember_taken(choice);
         }
 
         // A hotkey press then finds the graphics device ready. If this fails, the first
@@ -229,16 +255,6 @@ fn main() -> Result<()> {
         add_tray_icon(hwnd)?;
         window::remember_front();
 
-        // Read once: a hand edit takes effect at the next start. An invalid value stays in the
-        // file until the next choice rewrites it.
-        let (mut settings, invalid) = settings::load();
-        // An installer's Start with Windows becomes the setting, once per install, so Settings
-        // stays the one place that says it. The installer set or cleared the Run entry itself.
-        if let Some(choice) = startup::installer_choice(settings::portable()) {
-            settings.start_with_windows = choice.on;
-            settings::store(settings.clone());
-            startup::remember_taken(&choice);
-        }
         editor::set_colour(settings.colour);
         editor::set_sizes(settings.sizes);
         editor::set_text_size(settings.text_size);
@@ -247,7 +263,7 @@ fn main() -> Result<()> {
         editor::set_level(settings.blur);
         // A start the user made says Zilum is there, as it has no window. Any problem below
         // follows and replaces it. A start at sign-in says nothing.
-        if !startup::at_sign_in() {
+        if !at_sign_in {
             notify(
                 hwnd,
                 &running(settings.hotkeys[Mode::Capture as usize], took_over),
@@ -256,9 +272,10 @@ fn main() -> Result<()> {
         if invalid {
             notify(hwnd, "Some settings were invalid and reset");
         }
-        // The entry holds the exe's path, so a moved or renamed exe still starts at sign-in.
-        if settings.start_with_windows {
-            startup::set(true);
+        // The entry holds the exe's path, so a moved or renamed exe still starts at sign-in. A start
+        // at sign-in did this above.
+        if !at_sign_in {
+            startup::refresh(settings.start_with_windows, choice.is_some());
         }
 
         // Each hotkey is claimed, retried and reported on its own, so one another app owns

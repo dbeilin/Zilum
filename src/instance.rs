@@ -81,8 +81,9 @@ pub fn left_message(own: u32, opened: u32) -> &'static str {
 
 /// Meets the running copy, when another copy holds `mutex`, the single-instance mutex this copy
 /// opened. True when this copy took over: the running copy, older, closed, and this copy holds
-/// `mutex` now. False when it leaves, the running copy told why.
-pub fn arrive(mutex: HANDLE) -> bool {
+/// `mutex` now. False when it leaves, the running copy told why unless `quiet`, as a start at
+/// sign-in is.
+pub fn arrive(mutex: HANDLE, quiet: bool) -> bool {
     let Some(tray) = running_tray() else {
         return false;
     };
@@ -102,7 +103,9 @@ pub fn arrive(mutex: HANDLE) -> bool {
     .0 != 0;
     match meet(VERSION, answered.then_some(answer as u32)) {
         Meeting::Leave => {
-            win32::post(tray, WM_COPY_LEFT, WPARAM(VERSION as usize), LPARAM(0));
+            if !quiet {
+                win32::post(tray, WM_COPY_LEFT, WPARAM(VERSION as usize), LPARAM(0));
+            }
             false
         }
         Meeting::TakeOver => {
