@@ -1,11 +1,11 @@
-//! The settings file, `%APPDATA%\Zilum\settings.ini`: plain text the user can read, edit and
-//! delete, one `key=value` per line.
+//! The settings file, `%APPDATA%\Zilum\settings.ini`, or the `settings.ini` beside the exe of a
+//! Portable Zilum: plain text the user can read, edit and delete, one `key=value` per line.
 
 use std::{
     fs::{self, File},
     io::Write,
     path::{Component, Path, PathBuf},
-    sync::Mutex,
+    sync::{Mutex, OnceLock},
 };
 
 use windows::{
@@ -125,13 +125,37 @@ pub fn store(settings: Settings) {
     }
 }
 
-/// `settings.ini` in `Zilum` in the user's roaming application data folder.
+/// Where the settings file is, looked up once at start like the settings themselves, so a
+/// `settings.ini` added beside the exe or removed while Zilum runs counts from the next start.
 fn file() -> Option<PathBuf> {
-    Some(
-        known_folder(&FOLDERID_RoamingAppData)?
-            .join("Zilum")
-            .join("settings.ini"),
-    )
+    static FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    FILE.get_or_init(|| {
+        let exe = std::env::current_exe().ok();
+        let exe_folder = exe.as_deref().and_then(Path::parent);
+        let beside = exe_folder.is_some_and(|folder| folder.join(SETTINGS_INI).is_file());
+        place(exe_folder, beside, || {
+            known_folder(&FOLDERID_RoamingAppData)
+        })
+    })
+    .clone()
+}
+
+/// The settings file's name, beside the exe or in `%APPDATA%\Zilum`.
+const SETTINGS_INI: &str = "settings.ini";
+
+/// The settings file's path, given the folder the exe is in and whether a `settings.ini` is in
+/// it: that file when it is there, which makes this a Portable Zilum, and otherwise
+/// `settings.ini` in `Zilum` in the user's roaming application data folder, which is asked
+/// for only then.
+fn place(
+    exe_folder: Option<&Path>,
+    beside: bool,
+    roaming: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    match exe_folder {
+        Some(folder) if beside => Some(folder.join(SETTINGS_INI)),
+        _ => Some(roaming()?.join("Zilum").join(SETTINGS_INI)),
+    }
 }
 
 /// The default save folder, `Zilum` in the user's Pictures folder wherever that has been moved
@@ -778,5 +802,37 @@ mod tests {
             }
         }
         assert_eq!(parse(&to_text(&defaults())), (defaults(), false));
+    }
+
+    /// Where Windows puts this person's roaming application data.
+    fn roaming() -> Option<PathBuf> {
+        Some(PathBuf::from(r"C:\Users\me\AppData\Roaming"))
+    }
+
+    #[test]
+    fn a_settings_file_beside_the_exe_is_a_portable_zilums_and_the_roaming_folder_is_not_asked_for()
+    {
+        assert_eq!(
+            place(Some(Path::new(r"E:\Zilum")), true, || {
+                panic!("asked for the roaming folder")
+            }),
+            Some(PathBuf::from(r"E:\Zilum\settings.ini"))
+        );
+    }
+
+    #[test]
+    fn with_no_settings_file_beside_the_exe_the_settings_file_is_in_zilum_in_the_roaming_folder() {
+        let in_roaming = Some(PathBuf::from(
+            r"C:\Users\me\AppData\Roaming\Zilum\settings.ini",
+        ));
+        assert_eq!(
+            place(Some(Path::new(r"C:\Users\me\Downloads")), false, roaming),
+            in_roaming
+        );
+        assert_eq!(place(None, false, roaming), in_roaming);
+        assert_eq!(
+            place(Some(Path::new(r"C:\Users\me\Downloads")), false, || None),
+            None
+        );
     }
 }
