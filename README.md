@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/dbeilin/Zilum/releases/latest/download/Zilum.exe"><b>Download</b></a>
+  <a href="https://github.com/dbeilin/Zilum/releases/latest/download/Zilum-Setup.exe"><b>Download</b></a>
   &nbsp;·&nbsp;
   <a href="https://dbeilin.github.io/Zilum/">Website</a>
   &nbsp;·&nbsp;
@@ -56,19 +56,22 @@ The Snipping Tool takes 198 ms to open its overlay on the same machine ([how it 
 
 ## Privacy
 
-Zilum works offline and collects nothing. The exe contains no networking code, so there's no telemetry and no update check (watch this repo's releases for new versions). Captures go to your clipboard or save folder, and OCR runs on your PC with the engine built into Windows.
+Zilum works offline and collects nothing. Neither the exe nor its installer contains networking code, so there's no telemetry and no update check (watch this repo's releases for new versions). Captures go to your clipboard or save folder, and OCR runs on your PC with the engine built into Windows.
 
 ## Install
 
-1. Download [`Zilum.exe`](https://github.com/dbeilin/Zilum/releases/latest/download/Zilum.exe) from the latest release and run it. Zilum lives in the tray.
-2. The exe is not code-signed yet, so SmartScreen may stop it the first time: choose **More info**, then **Run anyway**. Each release lists the exe's SHA-256 next to it.
-3. To have Zilum running after a restart, turn on **Start with Windows** in its Settings.
-4. To update, download the new `Zilum.exe` and run it. It closes the older copy that is running and takes its place.
+Download [`Zilum-Setup.exe`](https://github.com/dbeilin/Zilum/releases/latest/download/Zilum-Setup.exe) from the latest release and run it. It asks who to install for (you only, needing no administrator, or all users), where, and whether to add a desktop icon and start with Windows. It ends by launching Zilum, which lives in the tray and has an entry in the Start Menu.
+
+Or download [`Zilum-Portable.zip`](https://github.com/dbeilin/Zilum/releases/latest/download/Zilum-Portable.zip), extract it anywhere, a USB stick included, and run `Zilum.exe`. It keeps its settings in the `settings.ini` beside it and nothing in `%APPDATA%`.
+
+Neither download is code-signed yet, so SmartScreen may stop it the first time: choose **More info**, then **Run anyway**. Each release lists both files' SHA-256 next to them.
 
 > [!NOTE]
 > If PrintScreen still opens the Snipping Tool, turn off **Use the Print screen key to open screen capture** in Windows Settings › Accessibility › Keyboard.
 
-To remove Zilum, turn off Start with Windows, quit it from the tray and delete the exe. Its settings are in `%APPDATA%\Zilum`.
+**To update**, run a later `Zilum-Setup.exe`. It closes Zilum and installs over it, in the same folder and for the same people, without asking those questions again and keeping your settings. For the portable version, quit it, replace `Zilum.exe` with the one from a later zip and keep the `settings.ini`.
+
+**To remove** Zilum, uninstall it from Windows Settings › Apps › Installed apps. It keeps your settings in `%APPDATA%\Zilum` unless you tick **Also remove my settings**, and never touches your captures. For the portable version, turn off Start with Windows in its Settings, quit it from the tray and delete its folder.
 
 ## Usage
 

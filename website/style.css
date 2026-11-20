@@ -166,6 +166,19 @@ h1 {
   line-height: 20px;
   font-variant-numeric: tabular-nums;
 }
+/* Quieter than the button: the line's own colour, set apart by its underline. */
+.portable {
+  /* Even on both sides, so on a phone, where it wraps to its own line, it stays centred. */
+  margin-inline: 8px;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--secondary) 40%, transparent);
+  text-underline-offset: 3px;
+  transition: color 150ms ease, text-decoration-color 150ms ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .portable:hover { color: var(--text); text-decoration-color: currentColor; }
+}
 
 /* The features: a row of tabs over one stage. */
 .features {
