@@ -161,3 +161,88 @@ begin
   CloseRunningZilum;
   Result := '';
 end;
+
+const
+  // The start at sign-in, as src\startup.rs writes it: the quoted exe, then the sign-in flag.
+  RUN_KEY = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  RUN_NAME = 'Zilum';
+
+var
+  // Whether the person uninstalling ticked Also remove my settings.
+  RemoveSettings: Boolean;
+
+// Asks whether the settings go too, with one checkbox, unticked. Comes after Inno's own "Are you
+// sure" prompt, which cannot be left out, so it offers no second way back. True when ticked.
+function AskRemoveSettings: Boolean;
+var
+  Form: TSetupForm;
+  Prompt: TNewStaticText;
+  SettingsBox: TNewCheckBox;
+  Uninstall: TNewButton;
+begin
+  Form := CreateCustomForm(ScaleX(380), ScaleY(130), False, True);
+  try
+    Form.Caption := 'Uninstall Zilum';
+    Form.BorderIcons := [];
+
+    Prompt := TNewStaticText.Create(Form);
+    Prompt.Parent := Form;
+    Prompt.Left := ScaleX(16);
+    Prompt.Top := ScaleY(16);
+    Prompt.Width := Form.ClientWidth - ScaleX(32);
+    Prompt.AutoSize := False;
+    Prompt.WordWrap := True;
+    Prompt.Height := ScaleY(30);
+    Prompt.Caption := 'Zilum will be removed from this PC. Your captures stay where they are.';
+
+    SettingsBox := TNewCheckBox.Create(Form);
+    SettingsBox.Parent := Form;
+    SettingsBox.Left := ScaleX(16);
+    SettingsBox.Top := ScaleY(52);
+    SettingsBox.Width := Form.ClientWidth - ScaleX(32);
+    SettingsBox.Height := ScaleY(17);
+    SettingsBox.Caption := 'Also remove my settings';
+    SettingsBox.Checked := False;
+
+    Uninstall := TNewButton.Create(Form);
+    Uninstall.Parent := Form;
+    Uninstall.Width := ScaleX(75);
+    Uninstall.Height := ScaleY(23);
+    Uninstall.Left := Form.ClientWidth - ScaleX(16) - Uninstall.Width;
+    Uninstall.Top := Form.ClientHeight - ScaleY(12) - Uninstall.Height;
+    Uninstall.Caption := 'Uninstall';
+    Uninstall.ModalResult := mrOk;
+    Uninstall.Default := True;
+
+    Form.ActiveControl := Uninstall;
+    Form.ShowModal;
+    Result := SettingsBox.Checked;
+  finally
+    Form.Free;
+  end;
+end;
+
+// Runs once the person has said yes to Inno's prompt, before anything is removed. A silent
+// uninstall asks nothing and keeps the settings.
+procedure InitializeUninstallProgressForm;
+begin
+  RemoveSettings := not UninstallSilent and AskRemoveSettings;
+end;
+
+// A running Zilum is closed as at an install, and the sign-in start goes whether the installer or
+// Zilum's Settings wrote it, when it names this install's exe; a Portable Zilum's start is left.
+// The settings go once everything else has.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Command: String;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    CloseRunningZilum;
+    if RegQueryStringValue(HKCU, RUN_KEY, RUN_NAME, Command)
+      and (Pos(Lowercase(ExpandConstant('"{app}\Zilum.exe"')), Lowercase(Command)) = 1) then
+      RegDeleteValue(HKCU, RUN_KEY, RUN_NAME);
+  end
+  else if (CurUninstallStep = usPostUninstall) and RemoveSettings then
+    DelTree(ExpandConstant('{userappdata}\Zilum'), True, True, True);
+end;
