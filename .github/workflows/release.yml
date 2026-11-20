@@ -52,7 +52,7 @@ jobs:
           echo "new=$new" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build the exe
+    name: Build the installer and the zip
     needs: check
     if: needs.check.outputs.new == 'true'
     runs-on: windows-latest
@@ -73,9 +73,18 @@ jobs:
       - name: Build release
         run: cargo build --release --locked
 
+      - name: Package
+        run: ./installer/package.ps1 -InstallInno
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          path: target/release/Zilum.exe
+          path: target/release/Zilum-Setup.exe
+          archive: false
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: target/release/Zilum-Portable.zip
           archive: false
           if-no-files-found: error
 
@@ -86,19 +95,27 @@ jobs:
     timeout-minutes: 10
     environment: release
     permissions:
-      contents: write # tag the commit, publish the release and upload the exe
+      contents: write # tag the commit, publish the release and upload its two files
       pull-requests: read # the merged release PR's description
       id-token: write # sign the attestation
       attestations: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: Zilum.exe
+          name: Zilum-Setup.exe
           path: dist
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Zilum-Portable.zip
+          path: dist
+          skip-decompress: true # the zip is the release file, not a wrapper around it
 
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: dist/Zilum.exe
+          subject-path: |
+            dist/Zilum-Setup.exe
+            dist/Zilum-Portable.zip
 
       # A tag on this commit is a re-run and is kept; one on another commit stops the release.
       - name: Tag the commit
@@ -133,7 +150,7 @@ jobs:
           else
             notes=(--generate-notes)
           fi
-          gh release create "v$VERSION" dist/Zilum.exe \
+          gh release create "v$VERSION" dist/Zilum-Setup.exe dist/Zilum-Portable.zip \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "Zilum $VERSION" \

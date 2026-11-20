@@ -36,11 +36,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The installer's size, or Zilum.exe's for a release from before the installer.
           read -r tag size < <(gh release view --repo "$GITHUB_REPOSITORY" --json tagName,assets \
-            --jq '[.tagName, (.assets[] | select(.name == "Zilum.exe") | .size)] | @tsv')
+            --jq '[.tagName, ([.assets[] | select(.name == "Zilum-Setup.exe" or .name == "Zilum.exe")]
+              | sort_by(.name != "Zilum-Setup.exe") | .[0].size)] | @tsv')
           version=${tag#v}
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$size" =~ ^[0-9]+$ ]]; then
-            echo "::error::the latest release '$tag' has no X.Y.Z tag or no Zilum.exe"
+            echo "::error::the latest release '$tag' has no X.Y.Z tag or no Zilum-Setup.exe"
             exit 1
           fi
           mb=$(awk -v b="$size" 'BEGIN { printf "%.1f", b / 1048576 }')
