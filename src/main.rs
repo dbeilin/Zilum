@@ -177,6 +177,16 @@ pub enum Purpose {
     Scrolling,
 }
 
+/// Makes an installer's `choice`, if there is one, the Start with Windows in `settings`, stores
+/// them, and remembers the choice taken.
+fn take(settings: &mut settings::Settings, choice: Option<&startup::Choice>) {
+    if let Some(choice) = choice {
+        settings.start_with_windows = choice.on;
+        settings::store(settings.clone());
+        startup::remember_taken(choice);
+    }
+}
+
 fn main() -> Result<()> {
     // SAFETY: Win32 and Direct3D calls on live handles, interfaces and locals.
     unsafe {
@@ -186,20 +196,17 @@ fn main() -> Result<()> {
         // file until the next choice rewrites it.
         let (mut settings, invalid) = settings::load();
         // An installer's Start with Windows becomes the setting, once per install, so Settings
-        // stays the one place that says it. Taken only by the copy that goes on running, below.
+        // stays the one place that says it. Taken only while no other copy runs, whose settings
+        // would otherwise overwrite it.
         let choice = startup::installer_choice(settings::portable());
         let on = choice
             .as_ref()
             .map_or(settings.start_with_windows, |choice| choice.on);
         // The PC's start comes at everyone's sign-in, maybe beside a start of the person's own.
-        // This copy clears that one if it is not to be, whether or not it is the copy that stays,
-        // and leaves before it meets any running copy when the person's setting is off.
+        // This copy clears that one if it is not to be, whether or not it is the copy that stays.
         let at_sign_in = startup::at_sign_in();
         if at_sign_in {
             startup::refresh(on, choice.is_some());
-        }
-        if !startup::stays(at_sign_in, on) {
-            return Ok(());
         }
 
         // A newer copy opened while an older one runs closes it and starts in its place, so
@@ -207,14 +214,18 @@ fn main() -> Result<()> {
         // telling it why unless Windows started this copy at sign-in.
         let single_instance = CreateMutexW(None, true, w!(r"Local\Zilum"))?;
         let took_over = GetLastError() == ERROR_ALREADY_EXISTS;
+        // Someone whose setting is off sees nothing of a start at sign-in: this copy leaves
+        // before it meets any running copy.
+        if !startup::stays(at_sign_in, on) {
+            if !took_over {
+                take(&mut settings, choice.as_ref());
+            }
+            return Ok(());
+        }
         if took_over && !instance::arrive(single_instance, at_sign_in) {
             return Ok(());
         }
-        if let Some(choice) = &choice {
-            settings.start_with_windows = choice.on;
-            settings::store(settings.clone());
-            startup::remember_taken(choice);
-        }
+        take(&mut settings, choice.as_ref());
 
         // A hotkey press then finds the graphics device ready. If this fails, the first
         // capture tries again and reports its own failure.
