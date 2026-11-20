@@ -53,6 +53,7 @@ SelectTasksLabel2=Select the additional tasks you would like Setup to perform wh
 
 [Tasks]
 Name: desktopicon; Description: "Create a desktop icon"; Flags: unchecked
+Name: startwithwindows; Description: "Start with Windows"
 
 [Files]
 Source: "{#ReleaseExe}"; DestDir: "{app}"; Flags: ignoreversion
@@ -60,6 +61,17 @@ Source: "{#ReleaseExe}"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autoprograms}\Zilum"; Filename: "{app}\Zilum.exe"
 Name: "{autodesktop}\Zilum"; Filename: "{app}\Zilum.exe"; Tasks: desktopicon
+
+[Registry]
+; Start with Windows as the options page left it, for Zilum to make the setting at its next start,
+; once for this install (src\startup.rs reads these names). Install is new at each install.
+Root: HKCU; Subkey: "Software\Zilum"; ValueType: string; ValueName: "Install"; ValueData: "{code:InstallStamp}"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWindows"; ValueData: 1; Tasks: startwithwindows
+Root: HKCU; Subkey: "Software\Zilum"; ValueType: dword; ValueName: "StartWithWindows"; ValueData: 0; Tasks: not startwithwindows
+; The start at sign-in, set or cleared here so the next sign-in is right before Zilum has run. It
+; is the Run entry Zilum's Settings sets, naming this exe with the sign-in flag.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Zilum"; ValueData: """{app}\Zilum.exe"" --startup"; Tasks: startwithwindows
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Zilum"; Flags: deletevalue; Tasks: not startwithwindows
 
 [Run]
 Filename: "{app}\Zilum.exe"; Description: "Launch Zilum"; Flags: nowait postinstall
@@ -103,6 +115,12 @@ begin
     WaitForSingleObject(Process, CLOSE_MS);
     CloseHandle(Process);
   end;
+end;
+
+// This install's stamp: the time to the millisecond, so no two installs share one.
+function InstallStamp(Param: String): String;
+begin
+  Result := GetDateTimeString('yyyymmddhhnnsszzz', #0, #0);
 end;
 
 // Names the options page's button Install, since the install starts from it.

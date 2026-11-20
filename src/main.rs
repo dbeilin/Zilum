@@ -231,7 +231,14 @@ fn main() -> Result<()> {
 
         // Read once: a hand edit takes effect at the next start. An invalid value stays in the
         // file until the next choice rewrites it.
-        let (settings, invalid) = settings::load();
+        let (mut settings, invalid) = settings::load();
+        // An installer's Start with Windows becomes the setting, once per install, so Settings
+        // stays the one place that says it. The installer set or cleared the Run entry itself.
+        if let Some(choice) = startup::installer_choice(settings::portable()) {
+            settings.start_with_windows = choice.on;
+            settings::store(settings.clone());
+            startup::remember_taken(&choice);
+        }
         editor::set_colour(settings.colour);
         editor::set_sizes(settings.sizes);
         editor::set_text_size(settings.text_size);

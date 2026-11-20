@@ -125,19 +125,37 @@ pub fn store(settings: Settings) {
     }
 }
 
+/// Where the settings file is.
+fn file() -> Option<PathBuf> {
+    located().file.clone()
+}
+
+/// Whether this is a Portable Zilum, its settings in the `settings.ini` beside its exe.
+pub fn portable() -> bool {
+    located().portable
+}
+
+/// Where the settings file was found at start.
+struct Located {
+    /// The settings file's path, if Windows can say where it goes.
+    file: Option<PathBuf>,
+    /// Whether it is the `settings.ini` beside the exe.
+    portable: bool,
+}
+
 /// Where the settings file is, looked up once at start like the settings themselves, so a
 /// `settings.ini` added beside the exe or removed while Zilum runs counts from the next start.
-fn file() -> Option<PathBuf> {
-    static FILE: OnceLock<Option<PathBuf>> = OnceLock::new();
-    FILE.get_or_init(|| {
+fn located() -> &'static Located {
+    static LOCATED: OnceLock<Located> = OnceLock::new();
+    LOCATED.get_or_init(|| {
         let exe = std::env::current_exe().ok();
         let exe_folder = exe.as_deref().and_then(Path::parent);
-        let beside = exe_folder.is_some_and(|folder| folder.join(SETTINGS_INI).is_file());
-        place(exe_folder, beside, || {
+        let portable = exe_folder.is_some_and(|folder| folder.join(SETTINGS_INI).is_file());
+        let file = place(exe_folder, portable, || {
             known_folder(&FOLDERID_RoamingAppData)
-        })
+        });
+        Located { file, portable }
     })
-    .clone()
 }
 
 /// The settings file's name, beside the exe or in `%APPDATA%\Zilum`.
